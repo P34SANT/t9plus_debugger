@@ -1,0 +1,8 @@
+build_programmer/
+*.log
+*.jou
+*.str
+*.tmp
+.Xil/
+__pycache__/
+*.pyc

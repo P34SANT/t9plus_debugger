@@ -5,41 +5,38 @@
 ##
 
 ##############################################################################
-# Fan Headers: STM32 SWD & Primary UART Interface (3.3V Bank 34/35)
+# J3 Header: STM32 SWD & Dual UART Port (3.3V Bank 34/35)
 ##############################################################################
-# SWCLK: Fan Pin 4 (Shared across FAN3-FAN6, J18)
-set_property PACKAGE_PIN J18 [get_ports {fan_swclk}]
-set_property IOSTANDARD LVCMOS33 [get_ports {fan_swclk}]
-set_property SLEW FAST [get_ports {fan_swclk}]
+# Pin 3: SWCLK
+set_property PACKAGE_PIN P16 [get_ports {j3_swclk}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_swclk}]
+set_property SLEW FAST [get_ports {j3_swclk}]
 
-# SWDIO: FAN3 Pin 3 (F20) - Bidirectional with pull-up
-set_property PACKAGE_PIN F20 [get_ports {fan_swdio}]
-set_property IOSTANDARD LVCMOS33 [get_ports {fan_swdio}]
-set_property PULLUP true [get_ports {fan_swdio}]
-set_property SLEW FAST [get_ports {fan_swdio}]
+# Pin 4: SWDIO (Bidirectional with pullup)
+set_property PACKAGE_PIN P15 [get_ports {j3_swdio}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_swdio}]
+set_property PULLUP true [get_ports {j3_swdio}]
+set_property SLEW FAST [get_ports {j3_swdio}]
 
-# nRST: FAN4 Pin 3 (J20) - Target Reset (Open-Drain with pull-up)
-set_property PACKAGE_PIN J20 [get_ports {fan_nrst}]
-set_property IOSTANDARD LVCMOS33 [get_ports {fan_nrst}]
-set_property PULLUP true [get_ports {fan_nrst}]
+# Pin 5: nRST (Target Reset - Open-Drain with pullup)
+set_property PACKAGE_PIN T14 [get_ports {j3_nrst}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_nrst}]
+set_property PULLUP true [get_ports {j3_nrst}]
 
-# Primary UART0 TX: FAN5 Pin 3 (G17) - Output to Target RX
-set_property PACKAGE_PIN G17 [get_ports {fan_uart0_tx}]
-set_property IOSTANDARD LVCMOS33 [get_ports {fan_uart0_tx}]
+# Pin 7: Primary Target UART0 TX (Output to Target RX)
+set_property PACKAGE_PIN C20 [get_ports {j3_uart0_tx}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_uart0_tx}]
 
-# Primary UART0 RX: FAN6 Pin 3 (H20) - Input from Target TX
-set_property PACKAGE_PIN H20 [get_ports {fan_uart0_rx}]
-set_property IOSTANDARD LVCMOS33 [get_ports {fan_uart0_rx}]
-set_property PULLUP true [get_ports {fan_uart0_rx}]
+# Pin 8: Primary Target UART0 RX (Input from Target TX)
+set_property PACKAGE_PIN B20 [get_ports {j3_uart0_rx}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_uart0_rx}]
+set_property PULLUP true [get_ports {j3_uart0_rx}]
 
-##############################################################################
-# Secondary UART on J3 Header (Optional)
-##############################################################################
-# Pin 11: Secondary Target UART1 TX
+# Pin 11: Secondary Target UART1 TX (Output to Target RX2)
 set_property PACKAGE_PIN P14 [get_ports {j3_uart1_tx}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_uart1_tx}]
 
-# Pin 12: Secondary Target UART1 RX
+# Pin 12: Secondary Target UART1 RX (Input from Target TX2)
 set_property PACKAGE_PIN R14 [get_ports {j3_uart1_rx}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_uart1_rx}]
 set_property PULLUP true [get_ports {j3_uart1_rx}]
@@ -91,21 +88,17 @@ set_property PACKAGE_PIN E17 [get_ports {j4_target_io9}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io9}]
 
 ##############################################################################
-# PL LEDs (Bank 35) - Forced OFF (Driven 1'b0)
+# PL LEDs - Kept solid OFF (Bank 35)
 ##############################################################################
-# LED7 (F16)
 set_property PACKAGE_PIN F16 [get_ports {led_d7}]
 set_property IOSTANDARD LVCMOS33 [get_ports {led_d7}]
 
-# D6 Green (M17)
 set_property PACKAGE_PIN M17 [get_ports {led_d6}]
 set_property IOSTANDARD LVCMOS33 [get_ports {led_d6}]
 
-# D5 Red (M19)
 set_property PACKAGE_PIN M19 [get_ports {led_d5}]
 set_property IOSTANDARD LVCMOS33 [get_ports {led_d5}]
 
-# LED8 (L19)
 set_property PACKAGE_PIN L19 [get_ports {led_d8}]
 set_property IOSTANDARD LVCMOS33 [get_ports {led_d8}]
 

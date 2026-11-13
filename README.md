@@ -18,48 +18,45 @@ Universal CMSIS-DAP v2 Hardware Debug Probe & Dual-Channel UART Pod on the Antmi
 
 ## Fan Headers (Reusable as 3.3V GPIO, Bank 34)
 
-The Antminer T9+ provides 4 dedicated 4-pin fan headers wired to 3.3V LVCMOS I/O on Bank 34/35. Pin 4 (`J18`) is physically tied across all four fan headers on the PCB.
+## Hardware Pinout & Target MCU Wiring (Header J3)
 
+All programmer, debugger, and serial signals are routed to the **J3 expansion header** (2x12 dual-row 2.54mm connector, Banks 34 & 35, 3.3V LVCMOS).
+
+### J3 Header Pinout Map
 ```text
-FAN6: Pin 3 -> H20 (L17N), Pin 4 -> J18 (L14P)
-FAN5: Pin 3 -> G17 (L16P), Pin 4 -> J18 (L14P)
-FAN4: Pin 3 -> J20 (L17P), Pin 4 -> J18 (L14P)
-FAN3: Pin 3 -> F20 (L15N), Pin 4 -> J18 (L14P)
+ 1    3    5    7    9    11   13   15   17   19   21   23
+ 2    4    6    8    10   12   14   16   18   20   22   24
+┌────────────────────────────────────────────────────────┐
+│GND  P16  T14  C20  GND  P14  GND  T15  T17  GND  M14  GND│
+│GND  P15  T10  B20  GND  R14  GND  VCC  R18  GND  M15  GND│
+└────────────────────────────────────────────────────────┘
 ```
 
----
-
-## Hardware Pinout & Target MCU Wiring
-
-> ⚠️ **CRITICAL WARNING — PIN 2 IS +12V**:  
-> On every fan header, **Pin 2 carries +12V** (fan power rail). **NEVER connect Pin 2 to your STM32 or any 3.3V target!**
-
-| Fan Header | Pin # | FPGA Pin | Signal Name | Target MCU Connection | Description |
-| :--- | :---: | :---: | :--- | :--- | :--- |
-| **FAN3** | **Pin 1** | `GND` | **GND** | **Target GND** | Common Ground reference |
-| **FAN3** | **Pin 2** | `+12V` | *+12V Fan Rail* | **DO NOT CONNECT!** | High-voltage supply rail |
-| **FAN3** | **Pin 3** | `F20` | **SWDIO** | **Target SWDIO** (e.g. PA13) | Bidirectional SWD data (3.3V with pull-up) |
-| **FAN3** | **Pin 4** | `J18` | **SWCLK** | **Target SWCLK** (e.g. PA14) | SWD Clock output (3.3V LVCMOS) |
-| | | | | | |
-| **FAN4** | **Pin 3** | `J20` | **nRST** | **Target NRST** | Target reset (open-drain with pull-up) |
-| | | | | | |
-| **FAN5** | **Pin 3** | `G17` | **UART0 TX** | **Target RX** (e.g. PA10) | Probe TX &rarr; Target MCU RX |
-| **FAN6** | **Pin 3** | `H20` | **UART0 RX** | **Target TX** (e.g. PA9) | Target MCU TX &rarr; Probe RX (with pull-up) |
-
-### Single-Connector SWD:
-Because **Pin 4 (`J18`)** is SWCLK and **Pin 3 (`F20`)** is SWDIO, core SWD programming requires only **FAN3** (Pins 1, 3, and 4).
+| J3 Pin # | FPGA Pin | Signal Name | Target MCU Connection | Description |
+| :---: | :---: | :--- | :--- | :--- |
+| **Pin 1, 2** | `GND` | **GND** | **Target GND** | Common Ground reference |
+| **Pin 3** | `P16` | **SWCLK** | **Target SWCLK** (e.g. PA14) | SWD Clock (3.3V LVCMOS) |
+| **Pin 4** | `P15` | **SWDIO** | **Target SWDIO** (e.g. PA13) | Bidirectional SWD data (with pull-up) |
+| **Pin 5** | `T14` | **nRST** | **Target NRST** *(Optional)* | Target reset (open-drain with pull-up) |
+| **Pin 6** | `T10` | *Unused* | *Leave disconnected* | BOOT0 disabled |
+| **Pin 7** | `C20` | **UART0 TX** | **Target RX** (e.g. PA10) | Probe Primary UART TX (TCP port 2000) |
+| **Pin 8** | `B20` | **UART0 RX** | **Target TX** (e.g. PA9) | Target Primary UART TX (TCP port 2000) |
+| **Pin 9, 10**| `GND` | **GND** | **Target GND** | Ground reference |
+| **Pin 11** | `P14` | **UART1 TX** | **Secondary Target RX** | Probe Secondary UART TX (TCP port 2001) |
+| **Pin 12** | `R14` | **UART1 RX** | **Secondary Target TX** | Target Secondary UART TX (TCP port 2001) |
+| **Pin 16** | `VCC` | **+3.3V** | **Target 3.3V VDD** *(Optional)*| Onboard 3.3V power supply rail |
 
 ---
 
 ## Quick Start Guide
 
-### 1. Connect Target to Probe
-1. Connect **GND** (FAN3 Pin 1) to Target GND.
-2. Connect **SWDIO** (FAN3 Pin 3) to Target SWDIO.
-3. Connect **SWCLK** (FAN3 Pin 4) to Target SWCLK.
-4. *(Optional)* Connect **nRST** (FAN4 Pin 3) to Target NRST.
-5. *(Optional)* Connect **UART0 TX** (FAN5 Pin 3) and **RX** (FAN6 Pin 3).
-6. Power your STM32 target board (via USB or external 3.3V).
+### 1. Connect Target to Probe (Header J3)
+1. Connect **GND** (J3 Pin 1 or 2) to **Target GND**.
+2. Connect **SWCLK** (J3 Pin 3) to **Target SWCLK**.
+3. Connect **SWDIO** (J3 Pin 4) to **Target SWDIO**.
+4. *(Optional)* Connect **nRST** (J3 Pin 5) to **Target NRST**.
+5. *(Optional)* Connect **Target 3.3V VDD** to **J3 Pin 16** (or power target via USB).
+6. *(Optional)* Connect **UART0 TX** (J3 Pin 7) to Target RX and **UART0 RX** (J3 Pin 8) to Target TX.
 
 ### 2. Attach CMSIS-DAP over USB/IP (Windows Host)
 Ensure `usbip-win` is installed. Run PowerShell as Administrator:

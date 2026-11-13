@@ -1,6 +1,7 @@
 //
 // top_programmer.v - Top-Level Wrapper for Antminer T9+ STM32 Programmer & Dual UART Pod
 // Target: Xilinx Zynq XC7Z010-1CLG400C (Antminer T9+ Control Board V1.2)
+// All target signals routed to J3 and J4 expansion headers.
 //
 `timescale 1ns / 1ps
 
@@ -28,12 +29,12 @@ module top_programmer (
     inout  wire        FIXED_IO_0_ps_porb,
     inout  wire        FIXED_IO_0_ps_srstb,
 
-    // Fan Headers: STM32 SWD & Primary UART Interface (3.3V Bank 34/35)
-    output wire        fan_swclk,      // Fan Pin 4  (J18) - STM32 SWCLK (Shared PWM pin across all fan headers)
-    inout  wire        fan_swdio,      // FAN3 Pin 3 (F20) - STM32 SWDIO
-    inout  wire        fan_nrst,       // FAN4 Pin 3 (J20) - STM32 nRST (Reset)
-    output wire        fan_uart0_tx,   // FAN5 Pin 3 (G17) - Primary UART TX (To STM32 RX)
-    input  wire        fan_uart0_rx,   // FAN6 Pin 3 (H20) - Primary UART RX (From STM32 TX)
+    // J3 Header: STM32 SWD & Primary UART Interface (3.3V Bank 34/35)
+    output wire        j3_swclk,       // J3 Pin 3  (P16) - STM32 SWCLK
+    inout  wire        j3_swdio,       // J3 Pin 4  (P15) - STM32 SWDIO
+    inout  wire        j3_nrst,        // J3 Pin 5  (T14) - STM32 nRST (Reset)
+    output wire        j3_uart0_tx,    // J3 Pin 7  (C20) - Primary UART TX (To STM32 RX)
+    input  wire        j3_uart0_rx,    // J3 Pin 8  (B20) - Primary UART RX (From STM32 TX)
 
     // Secondary UART on J3 Header (3.3V Bank 34)
     output wire        j3_uart1_tx,    // J3 Pin 11 (P14) - Secondary UART TX
@@ -107,24 +108,24 @@ module top_programmer (
     );
 
     // =========================================================================
-    // SWD Interface Mapping:
-    // EMIO 0 (Linux Line 54) -> fan_swclk (Output on Fan Pin 4 / J18)
-    // EMIO 1 (Linux Line 55) -> fan_swdio (Bidirectional IOBUF on FAN3 Pin 3 / F20)
-    // EMIO 2 (Linux Line 56) -> fan_nrst  (Bidirectional IOBUF on FAN4 Pin 3 / J20)
-    // EMIO 3 (Linux Line 57) -> BOOT0 (Unused, tied low)
+    // SWD Interface Mapping on J3 Header:
+    // EMIO 0 (Linux Line 54) -> j3_swclk (Output on J3 Pin 3 / P16)
+    // EMIO 1 (Linux Line 55) -> j3_swdio (Bidirectional IOBUF on J3 Pin 4 / P15)
+    // EMIO 2 (Linux Line 56) -> j3_nrst  (Bidirectional IOBUF on J3 Pin 5 / T14)
+    // EMIO 3 (Linux Line 57) -> Unused (BOOT0 disabled, tied 0)
     // =========================================================================
-    assign fan_swclk      = emio_gpio_o[0];
-    assign emio_gpio_i[0] = fan_swclk;
+    assign j3_swclk       = emio_gpio_o[0];
+    assign emio_gpio_i[0] = j3_swclk;
 
     IOBUF iobuf_swdio (
-        .IO(fan_swdio),
+        .IO(j3_swdio),
         .O (emio_gpio_i[1]),
         .I (emio_gpio_o[1]),
         .T (emio_gpio_t[1])
     );
 
     IOBUF iobuf_nrst (
-        .IO(fan_nrst),
+        .IO(j3_nrst),
         .O (emio_gpio_i[2]),
         .I (emio_gpio_o[2]),
         .T (emio_gpio_t[2])
@@ -153,17 +154,17 @@ module top_programmer (
 
     // =========================================================================
     // UART Connections:
-    // UART0 routed to FAN5 Pin 3 (TX) and FAN6 Pin 3 (RX)
+    // UART0 routed to J3 Pin 7 (TX) and J3 Pin 8 (RX)
     // UART1 routed to J3 Pin 11 (TX) and J3 Pin 12 (RX)
     // =========================================================================
-    assign fan_uart0_tx    = ps_uart0_tx_int;
-    assign ps_uart0_rx_int = fan_uart0_rx;
+    assign j3_uart0_tx     = ps_uart0_tx_int;
+    assign ps_uart0_rx_int = j3_uart0_rx;
 
     assign j3_uart1_tx     = pl_uart1_tx_int;
     assign pl_uart1_rx_int = j3_uart1_rx;
 
     // =========================================================================
-    // PL User LEDs: Solid OFF (Logic 0 = OFF)
+    // PL User LEDs: Solid OFF (1'b0)
     // =========================================================================
     assign led_d7 = 1'b0;
     assign led_d6 = 1'b0;
