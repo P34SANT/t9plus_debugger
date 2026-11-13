@@ -1,0 +1,14 @@
+[Unit]
+Description=Antminer T9+ Programmer FPGA Bitstream Loader
+After=local-fs.target
+Before=t9-openocd.service t9-uart-bridge.service t9-io-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /home/xilinx/t9_programmer/scripts/t9_load_bit.py /home/xilinx/t9_programmer/bitstream/t9_programmer_pcap.bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

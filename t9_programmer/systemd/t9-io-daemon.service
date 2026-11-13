@@ -1,0 +1,17 @@
+[Unit]
+Description=Antminer T9+ Target I/O Controller & AI Automation REST API
+After=t9-fpga.service network.target
+Requires=t9-fpga.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/xilinx/t9_programmer/io_daemon
+ExecStart=/usr/bin/python3 /home/xilinx/t9_programmer/io_daemon/io_daemon.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

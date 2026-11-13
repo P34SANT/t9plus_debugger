@@ -1,0 +1,12 @@
+[Unit]
+Description=Antminer T9+ Turnkey STM32 Programmer & Pod Services
+After=network.target
+Wants=t9-fpga.service t9-cmsis-dap.service t9-uart-bridge.service t9-io-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target

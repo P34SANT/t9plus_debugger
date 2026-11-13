@@ -1,0 +1,17 @@
+[Unit]
+Description=Antminer T9+ Dual-Channel TCP UART Bridge
+After=t9-fpga.service network.target
+Requires=t9-fpga.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/xilinx/t9_programmer/uart_bridge
+ExecStart=/usr/bin/python3 /home/xilinx/t9_programmer/uart_bridge/uart_bridge.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

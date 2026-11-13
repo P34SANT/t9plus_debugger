@@ -1,0 +1,17 @@
+[Unit]
+Description=Antminer T9+ Universal CMSIS-DAP v2 USB/IP Debug Probe
+After=t9-fpga.service network.target
+Wants=t9-fpga.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/xilinx/usbip_dap
+ExecStart=/home/xilinx/usbip_dap/t9-cmsis-dap
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

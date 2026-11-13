@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""
+t9-io - Command Line Utility for Antminer T9+ Target I/O and AI Control
+Communicates with local t9-io-daemon via REST API or directly via sysfs.
+"""
+import sys
+import json
+import urllib.request
+import urllib.parse
+
+API_BASE = "http://127.0.0.1:8080/api"
+
+def api_get(endpoint):
+    req = urllib.request.Request(f"{API_BASE}{endpoint}")
+    with urllib.request.urlopen(req, timeout=5) as res:
+        return json.loads(res.read().decode('utf-8'))
+
+def api_post(endpoint, data=None):
+    payload = json.dumps(data).encode('utf-8') if data else b"{}"
+    req = urllib.request.Request(
+        f"{API_BASE}{endpoint}",
+        data=payload,
+        headers={'Content-Type': 'application/json'}
+    )
+    with urllib.request.urlopen(req, timeout=5) as res:
+        return json.loads(res.read().decode('utf-8'))
+
+def cmd_list():
+    pins = api_get("/pins")
+    print("\n" + "="*85)
+    print(f" {'PIN':<12} {'HEADER':<12} {'FPGA':<8} {'ALIAS':<14} {'ROLE':<16} {'DIR':<5} {'VAL'}")
+    print("="*85)
+    for k, p in pins.items():
+        loc = f"{p['header']} Pin {p['pin_num']}"
+        val_str = "HIGH (1)" if p['current_val'] == 1 else "LOW  (0)"
+        print(f" {k:<12} {loc:<12} {p['fpga_pin']:<8} {p.get('alias',''):<14} {p.get('role',''):<16} {p.get('direction','').upper():<5} {val_str}")
+    print("="*85 + "\n")
+
+def cmd_set(pin_query, val):
+    res = api_post(f"/pins/{pin_query}/set", {"val": int(val)})
+    print(f"[+] Pin '{res.get('pin', pin_query)}' set to {val}")
+
+def cmd_get(pin_query):
+    res = api_get(f"/pins/{pin_query}/get")
+    print(f"[*] Pin '{res.get('pin', pin_query)}' = {res.get('val')}")
+
+def cmd_pulse(pin_query, ms=50):
+    res = api_post(f"/pins/{pin_query}/pulse", {"ms": int(ms)})
+    print(f"[+] Pin '{res.get('pin', pin_query)}' pulsed for {ms} ms")
+
+def cmd_tag(pin_name, alias=None, role=None):
+    payload = {"pin": pin_name}
+    if alias: payload["alias"] = alias
+    if role: payload["role"] = role
+    res = api_post("/pins/configure", payload)
+    print(f"[+] Updated configuration for pin '{pin_name}': {res.get('config')}")
+
+def usage():
+    print("""
+Antminer T9+ Target I/O Control (t9-io)
+Usage:
+  t9-io list                       List all configurable 3.3V target pins
+  t9-io get <pin|alias|role>       Read current pin logic level
+  t9-io set <pin|alias|role> <0|1> Drive pin logic level
+  t9-io pulse <pin|alias|role> [ms]Pulse pin (default 50ms)
+  t9-io tag <pin> <alias> [role]   Set AI semantic alias and role for pin
+  t9-io reset                      Hard reset connected STM32 target
+  t9-io bootloader                 Enter STM32 serial bootloader mode
+""")
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(0)
+
+    cmd = sys.argv[1].lower()
+    try:
+        if cmd == "list":
+            cmd_list()
+        elif cmd == "set" and len(sys.argv) >= 4:
+            cmd_set(sys.argv[2], sys.argv[3])
+        elif cmd == "get" and len(sys.argv) >= 3:
+            cmd_get(sys.argv[2])
+        elif cmd == "pulse" and len(sys.argv) >= 3:
+            ms = sys.argv[3] if len(sys.argv) >= 4 else 50
+            cmd_pulse(sys.argv[2], ms)
+        elif cmd == "tag" and len(sys.argv) >= 4:
+            role = sys.argv[4] if len(sys.argv) >= 5 else None
+            cmd_tag(sys.argv[2], sys.argv[3], role)
+        elif cmd == "reset":
+            api_post("/programmer/reset")
+            print("[+] Target reset signal sent (nRST pulsed low 50ms).")
+        elif cmd == "bootloader":
+            api_post("/programmer/bootloader")
+            print("[+] Target set to BOOTLOADER mode (BOOT0=1, nRST pulsed).")
+        else:
+            usage()
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Quick reset command for Antminer T9+ STM32 target
+/home/xilinx/t9_programmer/bin/t9-io reset

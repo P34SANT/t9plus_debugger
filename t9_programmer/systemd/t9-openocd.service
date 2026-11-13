@@ -1,0 +1,18 @@
+[Unit]
+Description=Antminer T9+ OpenOCD STM32 SWD Debugger Server
+After=t9-fpga.service network.target
+Requires=t9-fpga.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/xilinx/t9_programmer/openocd
+ExecStart=/home/xilinx/t9_programmer/openocd/t9_openocd_server.sh stm32f4x
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
