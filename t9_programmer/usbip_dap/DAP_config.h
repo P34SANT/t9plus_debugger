@@ -46,6 +46,40 @@
 #define MIO_D3_GREEN        6       // MIO 38 = Bank 1, bit 6
 
 extern volatile uint32_t *gpio_mem;
+extern volatile uint32_t *swd_hw_mem;
+extern bool swd_hw_available;
+
+#define SWD_HW_BASE         0x43C00000
+#define SWD_REG_CTRL        0x00
+#define SWD_REG_CLK_DIV     0x04
+#define SWD_REG_WDATA       0x08
+#define SWD_REG_RDATA       0x0C
+#define SWD_REG_STATUS      0x10
+#define SWD_REG_RAW_LEN     0x14
+#define SWD_REG_ID          0x18
+
+static inline int zynq_swd_hw_init(void) {
+    if (swd_hw_mem != NULL) return 0;
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) return -1;
+    swd_hw_mem = (volatile uint32_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SWD_HW_BASE);
+    close(fd);
+    if (swd_hw_mem == MAP_FAILED) {
+        swd_hw_mem = NULL;
+        swd_hw_available = false;
+        return -1;
+    }
+
+    if (swd_hw_mem[SWD_REG_ID / 4] == 0x53574401) {
+        swd_hw_available = true;
+        // Default: 1.0 MHz (div=49), HW_EN=1 (bit 15), IDLE_CYCLES=8 (bits 12:8)
+        swd_hw_mem[SWD_REG_CLK_DIV / 4] = 49;
+        swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (8 << 8);
+    } else {
+        swd_hw_available = false;
+    }
+    return 0;
+}
 
 static inline int zynq_gpio_init(void) {
     if (gpio_mem != NULL) return 0;
@@ -179,6 +213,7 @@ static inline int DAP_CONFIG_nTRST_read(void) { return 0; }
 // Port Control
 static inline void DAP_CONFIG_SETUP(void) {
     zynq_gpio_init();
+    zynq_swd_hw_init();
     zynq_pin_dir_out(PIN_SWCLK);
     zynq_pin_dir_out(PIN_SWDIO);
     zynq_set_pin(PIN_SWCLK, 1);

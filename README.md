@@ -6,6 +6,8 @@ Transform any Antminer T9+ Control Board (Xilinx Zynq XC7Z010-1CLG400C) into a t
 
 ## Key Highlights
 
+- **FPGA Hardware SWD Accelerator:** Custom Verilog engine (`axi_swd_engine.v`) integrated directly into the Zynq PL at `0x43C00000`. Supports **dynamically configurable clock speeds on the fly from 100 kHz up to 25.0 MHz** with zero CPU overhead and zero jitter.
+- **Fail-Safe Hybrid Architecture:** Dynamic multiplexer allows seamless switching between FPGA hardware acceleration and legacy EMIO bit-banging (`REG_CTRL[15]`).
 - **Standard CMSIS-DAP v2 (USB/IP):** Exposes high-speed USB 2.0 (480 Mbps) bulk endpoints directly over IP. Zero driver installation needed on Windows (native WinUSB `0d28:0204`).
 - **Complete STM32 Compatibility:** Works out of the box with **ALL STM32 families** (F0, F1, F2, F3, F4, F7, G0, G4, L0, L1, L4, L5, H7, U5, C0, WB, WL).
 - **Broad ARM Cortex-M Ecosystem Support:** Native SWD support for **NXP** (LPC, i.MX RT), **TI** (MSP432, CC13xx/CC26xx), **Microchip/Atmel** (SAMD, SAME), **Raspberry Pi** (RP2040, RP2350), and **WCH** (CH32F series).

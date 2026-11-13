@@ -104,25 +104,43 @@ module top_programmer (
         .ps_uart0_rx(ps_uart0_rx_int),
 
         .pl_uart1_tx(pl_uart1_tx_int),
-        .pl_uart1_rx(pl_uart1_rx_int)
+        .pl_uart1_rx(pl_uart1_rx_int),
+
+        .swd_hw_en(swd_hw_en),
+        .hw_swclk_o(hw_swclk_o),
+        .hw_swdio_o(hw_swdio_o),
+        .hw_swdio_t(hw_swdio_t),
+        .hw_swdio_i(hw_swdio_i)
     );
 
     // =========================================================================
     // SWD Interface Mapping on J3 Header:
-    // EMIO 0 (Linux Line 54) -> j3_swclk (Output on J3 Pin 3 / P16)
-    // EMIO 1 (Linux Line 55) -> j3_swdio (Bidirectional IOBUF on J3 Pin 4 / P15)
-    // EMIO 2 (Linux Line 56) -> j3_nrst  (Bidirectional IOBUF on J3 Pin 5 / T14)
-    // EMIO 3 (Linux Line 57) -> Unused (BOOT0 disabled, tied 0)
+    // Dynamic Multiplexing between Hardware SWD Engine and EMIO GPIOs:
+    // When swd_hw_en == 1: Driven by FPGA Hardware Accelerator (100k-50MHz)
+    // When swd_hw_en == 0: Driven by EMIO Software Bit-Bang (Fail-Safe Fallback)
+    //
+    // J3 Pin 3 (P16): SWCLK
+    // J3 Pin 4 (P15): SWDIO (Bidirectional IOBUF)
+    // J3 Pin 5 (T14): nRST  (Bidirectional Open-Drain IOBUF)
     // =========================================================================
-    assign j3_swclk       = emio_gpio_o[0];
+    wire swd_hw_en;
+    wire hw_swclk_o;
+    wire hw_swdio_o;
+    wire hw_swdio_t;
+    wire hw_swdio_i;
+    wire pin_swdio_i;
+
+    assign hw_swdio_i     = pin_swdio_i;
+    assign j3_swclk       = swd_hw_en ? hw_swclk_o : emio_gpio_o[0];
     assign emio_gpio_i[0] = j3_swclk;
 
     IOBUF iobuf_swdio (
         .IO(j3_swdio),
-        .O (emio_gpio_i[1]),
-        .I (emio_gpio_o[1]),
-        .T (emio_gpio_t[1])
+        .O (pin_swdio_i),
+        .I (swd_hw_en ? hw_swdio_o : emio_gpio_o[1]),
+        .T (swd_hw_en ? hw_swdio_t : emio_gpio_t[1])
     );
+    assign emio_gpio_i[1] = pin_swdio_i;
 
     IOBUF iobuf_nrst (
         .IO(j3_nrst),

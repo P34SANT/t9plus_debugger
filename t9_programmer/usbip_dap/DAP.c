@@ -352,6 +352,52 @@ static inline uint32_t dap_parity(uint32_t value)
 //-----------------------------------------------------------------------------
 static int dap_swd_operation(int req, uint32_t *data)
 {
+  if (swd_hw_available && swd_hw_mem)
+  {
+    int rnw   = (req & DAP_TRANSFER_RnW) ? 1 : 0;
+    int apndp = (req & DAP_TRANSFER_APnDP) ? 1 : 0;
+    int addr  = (req >> 2) & 3; // A[3:2]
+
+    if (!rnw && data) {
+      swd_hw_mem[SWD_REG_WDATA / 4] = *data;
+    }
+
+    int idle = (dap_idle_cycles > 8) ? dap_idle_cycles : 8;
+    if (idle > 31) idle = 31;
+
+    // Launch hardware transaction:
+    // bit 15: HW_EN
+    // bit 12:8: IDLE_CYCLES
+    // bit 4:3: ADDR
+    // bit 2: RnW
+    // bit 1: APnDP
+    // bit 0: START
+    uint32_t ctrl = (1 << 15) | (idle << 8) | (addr << 3) | (rnw << 2) | (apndp << 1) | 1;
+    swd_hw_mem[SWD_REG_CTRL / 4] = ctrl;
+
+    // Wait for hardware completion (busy = bit 0 of STATUS)
+    uint32_t st = 0;
+    for (int timeout = 0; timeout < 100000; timeout++) {
+      st = swd_hw_mem[SWD_REG_STATUS / 4];
+      if ((st & 1) == 0) break;
+    }
+
+    int ack     = (st >> 1) & 0x07;
+    int par_err = (st >> 4) & 1;
+
+    if (ack == DAP_TRANSFER_OK) {
+      if (rnw) {
+        if (par_err) {
+          ack = DAP_TRANSFER_ERROR;
+        } else if (data) {
+          *data = swd_hw_mem[SWD_REG_RDATA / 4];
+        }
+      }
+    }
+
+    return ack;
+  }
+
   uint32_t value;
   int ack = 0;
 
@@ -619,11 +665,22 @@ static int dap_jtag_operation(int req, uint32_t *data)
 //-----------------------------------------------------------------------------
 static void dap_setup_clock(int freq)
 {
-  // Cap max frequency at 1000000 (1 MHz) for reliable bitbanging over J3 header
-  if (freq > 1000000 || freq <= 0)
+  if (freq <= 0)
     freq = 1000000;
+  if (freq > 25000000)
+    freq = 25000000; // Cap at 25 MHz for cable safety
 
-  dap_clock_delay = (DAP_CONFIG_DELAY_CONSTANT * 1000) / freq;
+  if (swd_hw_available && swd_hw_mem) {
+    // Dynamic hardware clock scaling:
+    // F_SWCLK = 100MHz / (2 * (div + 1))
+    int div = (100000000 / (2 * freq)) - 1;
+    if (div < 1) div = 1;       // Max 25 MHz
+    if (div > 65535) div = 65535;
+    swd_hw_mem[SWD_REG_CLK_DIV / 4] = div;
+  }
+
+  int sw_freq = (freq > 2000000) ? 2000000 : freq;
+  dap_clock_delay = (DAP_CONFIG_DELAY_CONSTANT * 1000) / sw_freq;
   if (dap_clock_delay < 350)
     dap_clock_delay = 350; // Minimum delay for signal settling on Zynq EMIO
 
@@ -1169,6 +1226,12 @@ static void dap_swj_pins(void)
   int select = dap_req_get_byte();
   int wait   = dap_req_get_word();
 
+  if (select & (DAP_SWJ_SWCLK_TCK | DAP_SWJ_SWDIO_TMS)) {
+    if (swd_hw_available && swd_hw_mem) {
+      swd_hw_mem[SWD_REG_CTRL / 4] &= ~(1 << 15); // Temporarily release pin mux to EMIO
+    }
+  }
+
   if (select & DAP_SWJ_SWCLK_TCK)
     DAP_CONFIG_SWCLK_TCK_write(value & DAP_SWJ_SWCLK_TCK);
 
@@ -1212,6 +1275,21 @@ static void dap_swj_sequence(void)
   int size = dap_req_get_byte();
   if (size == 0)
     size = 256;
+
+  if (swd_hw_available && swd_hw_mem) {
+    while (size > 0) {
+      int sz = (size > 8) ? 8 : size;
+      uint8_t byte_val = dap_req_get_byte();
+      swd_hw_mem[SWD_REG_WDATA / 4] = byte_val;
+      swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
+      // HW_EN=1 (bit 15), RAW_MODE=1 (bit 14), START=1 (bit 0)
+      swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
+      while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+      size -= sz;
+    }
+    dap_resp_add_byte(DAP_OK);
+    return;
+  }
 
   DAP_CONFIG_SWDIO_TMS_out();
 
@@ -1260,7 +1338,32 @@ static void dap_swd_sequence(void)
     if (count == 0)
       count = 64U;
 
-    if (din)
+    if (swd_hw_available && swd_hw_mem) {
+      if (din) {
+        while (count) {
+          int sz = (count > 8) ? 8 : count;
+          swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
+          // HW_EN=1 (bit 15), RAW_DIR=1 (read, bit 16), RAW_MODE=1 (bit 14), START=1 (bit 0)
+          swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 16) | (1 << 15) | (1 << 14) | 1;
+          while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+          int value = swd_hw_mem[SWD_REG_RDATA / 4] & 0xFF;
+          dap_resp_add_byte(value);
+          count -= sz;
+        }
+      } else {
+        while (count) {
+          int sz = (count > 8) ? 8 : count;
+          uint8_t byte_val = dap_req_get_byte();
+          swd_hw_mem[SWD_REG_WDATA / 4] = byte_val;
+          swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
+          // HW_EN=1 (bit 15), RAW_DIR=0 (write), RAW_MODE=1 (bit 14), START=1 (bit 0)
+          swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
+          while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+          count -= sz;
+        }
+      }
+    }
+    else if (din)
     {
       DAP_CONFIG_SWDIO_TMS_in();
 

@@ -34,6 +34,8 @@
 #endif
 
 volatile uint32_t *gpio_mem = NULL;
+volatile uint32_t *swd_hw_mem = NULL;
+bool swd_hw_available = false;
 
 // Descriptors
 static const USB_DEVICE_DESCRIPTOR dev_dsc = {
