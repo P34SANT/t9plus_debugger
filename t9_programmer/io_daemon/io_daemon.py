@@ -125,28 +125,28 @@ class D3LedManager:
 
     def _run_pattern(self):
         if self.mode == "idle":
-            # Solid Green
-            self._apply_raw(0, 1)
+            # Solid OFF by default
+            self._apply_raw(0, 0)
         elif self.mode == "off":
             self._apply_raw(0, 0)
         elif self.mode == "error":
             # Solid Red
             self._apply_raw(1, 0)
         elif self.mode == "programming":
-            # Fast alternating Red and Green (100ms)
+            # Fast blinking Green only (100ms) - Red stays OFF
             while not self.stop_event.is_set():
-                self._apply_raw(1, 0)
-                if self.stop_event.wait(0.1): break
                 self._apply_raw(0, 1)
                 if self.stop_event.wait(0.1): break
+                self._apply_raw(0, 0)
+                if self.stop_event.wait(0.1): break
         elif self.mode == "success":
-            # Triple rapid green pulse, then solid green
+            # Triple rapid green pulse, then return to idle (OFF)
             for _ in range(3):
                 self._apply_raw(0, 1)
                 time.sleep(0.1)
                 self._apply_raw(0, 0)
                 time.sleep(0.1)
-            self._apply_raw(0, 1)
+            self._apply_raw(0, 0)
             self.mode = "idle"
 
 
@@ -679,6 +679,33 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 pin_manager.set_value("boot0", 1)
                 pin_manager.pulse("rst", 50, active_low=True)
                 self.send_json({"status": "ok", "action": "enter_bootloader", "boot0": 1})
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        elif path == "/api/esp32/bootloader":
+            # Sequence ESP32 into ROM Download Bootloader:
+            # IO0 (Target IO0 / J3 Pin 15) -> LOW
+            # EN / Reset (Target nRST / J3 Pin 5) -> pulse LOW (50ms) then release HIGH
+            # IO0 released HIGH after reset completes
+            try:
+                pin_manager.set_value("io0", 0)
+                time.sleep(0.05)
+                pin_manager.pulse("rst", 50, active_low=True)
+                time.sleep(0.05)
+                pin_manager.set_value("io0", 1)
+                self.send_json({"status": "ok", "action": "esp32_bootloader_ready"})
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        elif path == "/api/esp32/reset":
+            # Reset ESP32 into normal running mode (EN pulse with IO0=1):
+            try:
+                pin_manager.set_value("io0", 1)
+                time.sleep(0.02)
+                pin_manager.pulse("rst", 50, active_low=True)
+                self.send_json({"status": "ok", "action": "esp32_reset_normal"})
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
             return

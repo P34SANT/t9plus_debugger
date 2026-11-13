@@ -164,11 +164,11 @@ module top_programmer (
     assign pl_uart1_rx_int = j3_uart1_rx;
 
     // =========================================================================
-    // PL User LEDs: Solid OFF (1'b0)
+    // PL User LEDs: Solid OFF (Active-Low: 1'b1 = OFF)
     // =========================================================================
-    assign led_d7 = 1'b0;
-    assign led_d6 = 1'b0;
-    assign led_d5 = 1'b0;
-    assign led_d8 = 1'b0;
+    assign led_d7 = 1'b1;
+    assign led_d6 = 1'b1;
+    assign led_d5 = 1'b1;
+    assign led_d8 = 1'b1;
 
 endmodule

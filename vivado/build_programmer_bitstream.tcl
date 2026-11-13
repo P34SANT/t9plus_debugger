@@ -28,7 +28,10 @@ set_property target_constrs_file $xdc_file [current_fileset -constrset]
 
 # Launch Synthesis
 puts "==> Launching Synthesis (synth_1)..."
+reset_run impl_1 -quiet
 reset_run synth_1 -quiet
+reset_run impl_1
+reset_run synth_1
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
 

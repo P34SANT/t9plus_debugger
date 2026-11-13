@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <stdio.h>
+#include <time.h>
 
 #define DAP_CONFIG_DEFAULT_PORT        1 // DAP_PORT_SWD
 #define DAP_CONFIG_DEFAULT_CLOCK       1000000 // 1 MHz
@@ -27,15 +28,22 @@
 
 // Zynq-7000 GPIO Registers
 #define GPIO_BASE           0xE000A000
+#define MASK_DATA_1_LSW     0x0008  // Bank 1 LSW (MIO 32..47)
 #define MASK_DATA_2_LSW     0x0010  // Bank 2 LSW (pins 54..69)
+#define DATA_1              0x0044  // Bank 1 Output Data
 #define DATA_2              0x0048  // Bank 2 Input Data (Workaround for Zynq EMIO DATA_RO bug)
 #define DATA_2_RO           0x0068  // Bank 2 Input Data RO
+#define DIRM_1              0x0244  // Bank 1 Direction
+#define OEN_1               0x0248  // Bank 1 Output Enable
 #define DIRM_2              0x0284  // Bank 2 Direction (1=out, 0=in)
 #define OEN_2               0x0288  // Bank 2 Output Enable (1=enable)
 
 #define PIN_SWCLK           0       // GPIO 54 (EMIO 0)
 #define PIN_SWDIO           1       // GPIO 55 (EMIO 1)
 #define PIN_NRST            2       // GPIO 56 (EMIO 2)
+
+#define MIO_D3_RED          5       // MIO 37 = Bank 1, bit 5
+#define MIO_D3_GREEN        6       // MIO 38 = Bank 1, bit 6
 
 extern volatile uint32_t *gpio_mem;
 
@@ -64,6 +72,12 @@ static inline int zynq_gpio_init(void) {
     uint32_t mask = (~((1 << PIN_SWCLK) | (1 << PIN_SWDIO))) & 0xFFFF;
     uint32_t data = (1 << PIN_SWCLK) | (1 << PIN_SWDIO);
     gpio_mem[MASK_DATA_2_LSW / 4] = (mask << 16) | data;
+
+    // Configure D3 Red & Green (MIO 37/38) as outputs, initially solid OFF (Red=0, Green=0)
+    gpio_mem[DIRM_1 / 4] |= (1 << MIO_D3_RED) | (1 << MIO_D3_GREEN);
+    gpio_mem[OEN_1 / 4]  |= (1 << MIO_D3_RED) | (1 << MIO_D3_GREEN);
+    uint32_t mask_d3 = (~((1 << MIO_D3_RED) | (1 << MIO_D3_GREEN))) & 0xFFFF;
+    gpio_mem[MASK_DATA_1_LSW / 4] = (mask_d3 << 16) | 0;
 
     return 0;
 }
@@ -172,9 +186,33 @@ static inline void DAP_CONFIG_SETUP(void) {
     DAP_CONFIG_nRESET_write(1);
 }
 
+static inline void zynq_d3_led_set(int green_on) {
+    if (!gpio_mem) return;
+    // Red (bit 5) is always kept OFF (0), Green (bit 6) set according to green_on
+    uint32_t mask = (~((1 << MIO_D3_RED) | (1 << MIO_D3_GREEN))) & 0xFFFF;
+    uint32_t data = (green_on ? (1 << MIO_D3_GREEN) : 0);
+    gpio_mem[MASK_DATA_1_LSW / 4] = (mask << 16) | data;
+}
+
+static inline void dap_activity_blink(void) {
+    static struct timespec last_toggle = {0, 0};
+    static int led_state = 0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    long elapsed_ms = (now.tv_sec - last_toggle.tv_sec) * 1000 + 
+                      (now.tv_nsec - last_toggle.tv_nsec) / 1000000;
+    if (elapsed_ms >= 60) {
+        led_state ^= 1;
+        zynq_d3_led_set(led_state);
+        last_toggle = now;
+    }
+}
+
 static inline void DAP_CONFIG_DISCONNECT(void) {
     zynq_pin_dir_in(PIN_SWCLK);
     zynq_pin_dir_in(PIN_SWDIO);
+    zynq_d3_led_set(0);
 }
 
 static inline void DAP_CONFIG_CONNECT_SWD(void) {
@@ -190,8 +228,17 @@ static inline void DAP_CONFIG_CONNECT_JTAG(void) {
 }
 
 static inline void DAP_CONFIG_LED(int index, int state) {
-    (void)index;
-    (void)state;
+    if (index == 0) { // Connect
+        if (state == 0) {
+            zynq_d3_led_set(0);
+        }
+    } else if (index == 1) { // Running
+        if (state) {
+            dap_activity_blink();
+        } else {
+            zynq_d3_led_set(0);
+        }
+    }
 }
 
 static inline void DAP_CONFIG_DELAY(uint32_t cycles) {

@@ -19,6 +19,10 @@ sudo mkdir -p "$INSTALL_DIR/systemd"
 # Copy binaries and scripts
 sudo cp scripts/t9_load_bit.py "$INSTALL_DIR/scripts/"
 sudo chmod +x "$INSTALL_DIR/scripts/t9_load_bit.py"
+if [ -f scripts/t9_esp32_flash.py ]; then
+    sudo cp scripts/t9_esp32_flash.py "$INSTALL_DIR/scripts/"
+    sudo chmod +x "$INSTALL_DIR/scripts/t9_esp32_flash.py"
+fi
 
 sudo cp t9_programmer_pcap.bin "$INSTALL_DIR/bitstream/"
 sudo cp t9_programmer.bit "$INSTALL_DIR/bitstream/"
@@ -26,6 +30,7 @@ sudo cp t9_programmer.hwh "$INSTALL_DIR/bitstream/"
 
 sudo cp -r t9_programmer/usbip_dap/* "$INSTALL_DIR/usbip_dap/"
 (cd "$INSTALL_DIR/usbip_dap" && make clean && make)
+sudo ln -sfn "$INSTALL_DIR/usbip_dap" /home/xilinx/usbip_dap
 
 sudo cp t9_programmer/openocd/* "$INSTALL_DIR/openocd/"
 sudo chmod +x "$INSTALL_DIR/openocd/"*.sh

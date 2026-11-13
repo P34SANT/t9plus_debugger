@@ -1210,6 +1210,8 @@ static void dap_swj_clock(void)
 static void dap_swj_sequence(void)
 {
   int size = dap_req_get_byte();
+  if (size == 0)
+    size = 256;
 
   DAP_CONFIG_SWDIO_TMS_out();
 
@@ -1480,6 +1482,12 @@ int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size
 
   cmd = dap_req_get_byte();
   dap_resp_add_byte(cmd);
+
+  if (cmd == ID_DAP_TRANSFER || cmd == ID_DAP_TRANSFER_BLOCK ||
+      cmd == ID_DAP_SWD_SEQUENCE)
+  {
+    dap_activity_blink();
+  }
 
   for (int i = 0; i < ARRAY_SIZE(handlers); i++)
   {

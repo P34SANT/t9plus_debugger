@@ -12,6 +12,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -437,6 +439,17 @@ static void handle_client(int client_fd) {
             }
         } else {
             // Attached: Process USBIP URB Packets
+            struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
+            int pr = poll(&pfd, 1, 100);
+            if (pr == 0) {
+                // Idle: no USB/IP packets received in 100ms -> turn D3 green OFF
+                zynq_d3_led_set(0);
+                continue;
+            } else if (pr < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+
             uint32_t cmd_code;
             if (!recv_all(client_fd, &cmd_code, 4)) {
                 printf("[USBIP] recv cmd_code failed or connection closed: errno=%d (%s)\n", errno, strerror(errno));
@@ -568,6 +581,7 @@ static void handle_client(int client_fd) {
     }
 
     close(client_fd);
+    zynq_d3_led_set(0);
     printf("[USBIP] Client disconnected.\n");
 }
 
