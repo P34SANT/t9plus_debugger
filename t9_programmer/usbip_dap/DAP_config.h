@@ -9,7 +9,7 @@
 #include <stdio.h>
 
 #define DAP_CONFIG_DEFAULT_PORT        1 // DAP_PORT_SWD
-#define DAP_CONFIG_DEFAULT_CLOCK       2000000 // 2 MHz
+#define DAP_CONFIG_DEFAULT_CLOCK       1000000 // 1 MHz
 
 #define DAP_CONFIG_PACKET_SIZE         512
 #define DAP_CONFIG_PACKET_COUNT        1
@@ -22,13 +22,14 @@
 #define DAP_CONFIG_RESET_TARGET_FN     zynq_reset_target
 #define DAP_CONFIG_PERFORMANCE_ATTR
 
-#define DAP_CONFIG_DELAY_CONSTANT      160000
+#define DAP_CONFIG_DELAY_CONSTANT      500000
 #define DAP_CONFIG_FAST_CLOCK          10000000
 
 // Zynq-7000 GPIO Registers
 #define GPIO_BASE           0xE000A000
 #define MASK_DATA_2_LSW     0x0010  // Bank 2 LSW (pins 54..69)
-#define DATA_2_RO           0x0068  // Bank 2 Input Data
+#define DATA_2              0x0048  // Bank 2 Input Data (Workaround for Zynq EMIO DATA_RO bug)
+#define DATA_2_RO           0x0068  // Bank 2 Input Data RO
 #define DIRM_2              0x0284  // Bank 2 Direction (1=out, 0=in)
 #define OEN_2               0x0288  // Bank 2 Output Enable (1=enable)
 
@@ -74,7 +75,7 @@ static inline void zynq_set_pin(int pin, int val) {
 }
 
 static inline int zynq_read_pin(int pin) {
-    return (gpio_mem[DATA_2_RO / 4] >> pin) & 1;
+    return (gpio_mem[DATA_2 / 4] >> pin) & 1;
 }
 
 static inline void zynq_pin_dir_out(int pin) {

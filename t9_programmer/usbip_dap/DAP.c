@@ -394,7 +394,9 @@ static int dap_swd_operation(int req, uint32_t *data)
     }
 
     DAP_CONFIG_SWDIO_TMS_write(0);
-    dap_swj_run(dap_idle_cycles ? dap_idle_cycles : 1);
+    // ADIv5 requires at least 8 idle cycles after AP/DP transactions to allow internal bus/synchronizers to settle
+    int idle = (dap_idle_cycles > 8) ? dap_idle_cycles : 8;
+    dap_swj_run(idle);
   }
 
   else if (DAP_TRANSFER_WAIT == ack || DAP_TRANSFER_FAULT == ack)
@@ -421,6 +423,8 @@ static int dap_swd_operation(int req, uint32_t *data)
   {
     dap_swj_run(dap_swd_turnaround + 32 + 1);
     DAP_CONFIG_SWDIO_TMS_out();
+    DAP_CONFIG_SWDIO_TMS_write(0);
+    dap_swj_run(8);
   }
 
   DAP_CONFIG_SWDIO_TMS_write(1);
@@ -615,30 +619,22 @@ static int dap_jtag_operation(int req, uint32_t *data)
 //-----------------------------------------------------------------------------
 static void dap_setup_clock(int freq)
 {
-  if (freq > DAP_CONFIG_FAST_CLOCK)
-  {
-    dap_clock_delay = 0;
-    dap_swj_run     = dap_swj_run_fast;
-    dap_swd_write   = dap_swd_write_fast;
-    dap_swd_read    = dap_swd_read_fast;
+  // Cap max frequency at 1000000 (1 MHz) for reliable bitbanging over J3 header
+  if (freq > 1000000 || freq <= 0)
+    freq = 1000000;
+
+  dap_clock_delay = (DAP_CONFIG_DELAY_CONSTANT * 1000) / freq;
+  if (dap_clock_delay < 350)
+    dap_clock_delay = 350; // Minimum delay for signal settling on Zynq EMIO
+
+  dap_swj_run     = dap_swj_run_slow;
+  dap_swd_write   = dap_swd_write_slow;
+  dap_swd_read    = dap_swd_read_slow;
 #ifdef DAP_CONFIG_ENABLE_JTAG
-    dap_jtag_write  = dap_jtag_write_fast;
-    dap_jtag_read   = dap_jtag_read_fast;
-    dap_jtag_rdwr   = dap_jtag_rdwr_fast;
+  dap_jtag_write  = dap_jtag_write_slow;
+  dap_jtag_read   = dap_jtag_read_slow;
+  dap_jtag_rdwr   = dap_jtag_rdwr_slow;
 #endif
-  }
-  else
-  {
-    dap_clock_delay = (DAP_CONFIG_DELAY_CONSTANT * 1000) / freq;
-    dap_swj_run     = dap_swj_run_slow;
-    dap_swd_write   = dap_swd_write_slow;
-    dap_swd_read    = dap_swd_read_slow;
-#ifdef DAP_CONFIG_ENABLE_JTAG
-    dap_jtag_write  = dap_jtag_write_slow;
-    dap_jtag_read   = dap_jtag_read_slow;
-    dap_jtag_rdwr   = dap_jtag_rdwr_slow;
-#endif
-  }
 }
 
 //-----------------------------------------------------------------------------
@@ -667,8 +663,9 @@ static bool dap_select_device(int index)
 static int dap_transfer_word(int req, uint32_t *data)
 {
   int ack = DAP_TRANSFER_INVALID;
+  int retries = (dap_retry_count > 100) ? dap_retry_count : 100;
 
-  for (int i = 0; i < dap_retry_count; i++)
+  for (int i = 0; i < retries; i++)
   {
     if (DAP_PORT_SWD == dap_port)
       ack = dap_swd_operation(req, data);
@@ -680,6 +677,8 @@ static int dap_transfer_word(int req, uint32_t *data)
 
     if (DAP_TRANSFER_WAIT != ack || dap_abort)
       break;
+
+    dap_delay_us(10);
   }
 
   return ack;
