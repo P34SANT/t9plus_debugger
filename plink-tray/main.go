@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -190,26 +188,43 @@ func setTrayState(online bool, attached bool, balloonTitle string, balloonMsg st
 	pShell_NotifyIconW.Call(NIM_MODIFY, uintptr(unsafe.Pointer(&nidMain)))
 }
 
+func runCmdSilent(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+	return cmd.Output()
+}
+
 func isUsbipPortAttached() bool {
-	cmd := exec.Command(USBIP_PATH, "port")
-	out, err := cmd.Output()
+	out, err := runCmdSilent(USBIP_PATH, "port")
 	if err != nil {
 		return false
 	}
 	return bytes.Contains(out, []byte(BOARD_IP))
 }
 
-func attachUsbip() bool {
-	cmd1 := exec.Command(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
-	cmd1.Run()
-	cmd2 := exec.Command(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-2")
-	cmd2.Run()
-	return isUsbipPortAttached()
+func detachUsbip() {
+	// 1. Terminate any stuck or duplicate usbip.exe background CLI processes
+	runCmdSilent("taskkill", "/F", "/IM", "usbip.exe")
+	// 2. Cleanly restart the virtual root hub to drop all stale/duplicate attachments without hanging
+	runCmdSilent("pnputil", "/restart-device", "ROOT\\USB\\0000")
+	time.Sleep(400 * time.Millisecond)
 }
 
-func detachUsbip() {
-	cmd := exec.Command(USBIP_PATH, "detach", "-a")
-	cmd.Run()
+func attachUsbip() bool {
+	// If already cleanly attached, avoid duplicating
+	if isUsbipPortAttached() {
+		return true
+	}
+
+	// Always remove all existing devices first to prevent duplicates
+	detachUsbip()
+
+	// Attach Pod #1 (CMSIS-DAP + Dual COM) silently in background
+	runCmdSilent(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
+	return isUsbipPortAttached()
 }
 
 func apiPost(endpoint string) {
@@ -225,18 +240,17 @@ func apiPost(endpoint string) {
 	}()
 }
 
-// Event-driven monitor: Holds a single passive socket connection.
-// Zero CPU polling: blocks on network socket events.
+// Event-driven monitor: Uses HTTP SSE stream to monitor board online state.
+// Does NOT touch port 3240, keeping USB/IP port dedicated.
 func startEventDrivenMonitor() {
 	go func() {
 		for {
-			targetAddr := fmt.Sprintf("%s:%d", BOARD_IP, DAP_PORT)
-			conn, err := net.DialTimeout("tcp", targetAddr, 1500*time.Millisecond)
+			url := fmt.Sprintf("http://%s:%d/api/log_stream", BOARD_IP, WEB_PORT)
+			resp, err := http.Get(url)
 			if err != nil {
 				// Board is currently offline
 				setTrayState(false, false, "", "")
-				// Relaxed backoff: wait 4 seconds before re-checking
-				time.Sleep(4 * time.Second)
+				time.Sleep(3 * time.Second)
 				continue
 			}
 
@@ -249,26 +263,22 @@ func startEventDrivenMonitor() {
 			}
 
 			if attached {
-				setTrayState(true, true, "Plink Connected", "Pod connected (CMSIS-DAP + Serial).")
+				setTrayState(true, true, "Plink Connected", "Pod connected (CMSIS-DAP + Dual COM).")
 			} else {
 				setTrayState(true, false, "Plink Connected", "Pod online at 192.168.2.99")
 			}
 
-			// PASSIVE EVENT WAIT: Block on reading the socket.
-			// ZERO polling packets are transmitted. When board powers off/reboots,
-			// the OS TCP stack receives FIN/RST and Read() returns immediately.
-			buf := make([]byte, 1)
-			conn.SetReadDeadline(time.Time{}) // No timeout - purely event-driven
-			_, rerr := conn.Read(buf)
-
-			conn.Close()
-
-			// Socket broke: Board disconnected or reset!
-			if rerr == io.EOF || rerr != nil {
-				setTrayState(false, false, "Plink Closed", "Connection closed.")
+			// Block passively on reading the SSE stream. Zero CPU and zero polling.
+			buf := make([]byte, 512)
+			for {
+				_, rerr := resp.Body.Read(buf)
+				if rerr != nil {
+					break
+				}
 			}
+			resp.Body.Close()
 
-			// Small pause to allow board network interface to reset cleanly
+			setTrayState(false, false, "Plink Closed", "Connection closed.")
 			time.Sleep(2 * time.Second)
 		}
 	}()
@@ -340,14 +350,17 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 		switch cmdId {
 		case CMD_ATTACH:
 			go func() {
-				if attachUsbip() {
-					setTrayState(true, true, "Plink Attached", "Plink Pod attached successfully.")
+				// Flush any existing or duplicate devices first, then cleanly re-attach
+				detachUsbip()
+				runCmdSilent(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
+				if isUsbipPortAttached() {
+					setTrayState(true, true, "Plink Connected", "Pod attached successfully.")
 				}
 			}()
 		case CMD_DETACH:
 			go func() {
 				detachUsbip()
-				setTrayState(isOnline, false, "Plink Detached", "Plink Pod detached from Windows.")
+				setTrayState(isOnline, false, "Plink Closed", "Devices detached.")
 			}()
 		case CMD_AUTOATTACH:
 			stateMu.Lock()
