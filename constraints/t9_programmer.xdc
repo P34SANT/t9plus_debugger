@@ -67,26 +67,37 @@ set_property PACKAGE_PIN M15 [get_ports {j3_target_io4}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_target_io4}]
 
 ##############################################################################
-# J4 Header: Additional Configurable Target I/O Pins
+# J4 Header: Target Pod #2 (ST-LINK/V2) SWD Interface (3.3V Bank 34/35)
 ##############################################################################
-# Pin 3: TARGET_IO5
-set_property PACKAGE_PIN V18 [get_ports {j4_target_io5}]
-set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io5}]
+# Pin 3: SWCLK1
+set_property PACKAGE_PIN V18 [get_ports {j4_swclk}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j4_swclk}]
+set_property SLEW SLOW [get_ports {j4_swclk}]
+set_property DRIVE 8 [get_ports {j4_swclk}]
 
-# Pin 4: TARGET_IO6
-set_property PACKAGE_PIN V17 [get_ports {j4_target_io6}]
-set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io6}]
+# Pin 4: SWDIO1 (Bidirectional with pullup)
+set_property PACKAGE_PIN V17 [get_ports {j4_swdio}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j4_swdio}]
+set_property PULLUP true [get_ports {j4_swdio}]
+set_property SLEW SLOW [get_ports {j4_swdio}]
+set_property DRIVE 8 [get_ports {j4_swdio}]
 
-# Pin 5: TARGET_IO7
-set_property PACKAGE_PIN Y16 [get_ports {j4_target_io7}]
-set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io7}]
+# Pin 5: nRST1 (Target 2 Reset - Open-Drain with pullup)
+set_property PACKAGE_PIN Y16 [get_ports {j4_nrst}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j4_nrst}]
+set_property PULLUP true [get_ports {j4_nrst}]
 
-# Pin 6: TARGET_IO8
-set_property PACKAGE_PIN T16 [get_ports {j4_target_io8}]
+# Pin 6: SWO1 (Target 2 Trace Input)
+set_property PACKAGE_PIN T16 [get_ports {j4_swo}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j4_swo}]
+set_property PULLUP true [get_ports {j4_swo}]
+
+# Pin 7: TARGET_IO8
+set_property PACKAGE_PIN E17 [get_ports {j4_target_io8}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io8}]
 
-# Pin 7: TARGET_IO9
-set_property PACKAGE_PIN E17 [get_ports {j4_target_io9}]
+# Pin 8: TARGET_IO9
+set_property PACKAGE_PIN D18 [get_ports {j4_target_io9}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j4_target_io9}]
 
 ##############################################################################

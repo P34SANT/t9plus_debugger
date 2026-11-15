@@ -73,7 +73,7 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .bLength             = sizeof(USB_CONFIGURATION_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_CONFIGURATION,
         .wTotalLength        = sizeof(CONFIG_PLINK_COMPOSITE),
-        .bNumInterfaces      = 3,
+        .bNumInterfaces      = 5, // DAP + CDC0 (Comm+Data) + CDC1 (Comm+Data)
         .bConfigurationValue = 1,
         .iConfiguration      = 0,
         .bmAttributes        = 0x80, // Bus Powered
@@ -107,8 +107,8 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .wMaxPacketSize      = 512,
         .bInterval           = 0
     },
-    // Interface Association Descriptor (IAD) for CDC-ACM
-    .iad_cdc = {
+    // IAD 1: CDC-ACM 0 (Primary Target UART0 -> J3 Pins 7/8)
+    .iad_cdc0 = {
         .bLength             = sizeof(USB_IAD_DESCRIPTOR),
         .bDescriptorType     = 0x0B, // IAD
         .bFirstInterface     = 1,
@@ -116,10 +116,9 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .bFunctionClass      = 0x02, // CDC
         .bFunctionSubClass   = 0x02, // ACM
         .bFunctionProtocol   = 0x01, // AT commands
-        .iFunction           = 5     // "Plink Serial Port"
+        .iFunction           = 5     // "Plink UART0"
     },
-    // Interface 1: CDC-ACM Comm
-    .intf_cdc_comm = {
+    .intf_cdc0_comm = {
         .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
         .bInterfaceNumber    = 1,
@@ -127,36 +126,36 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .bNumEndpoints       = 1,
         .bInterfaceClass     = 0x02, // CDC Control
         .bInterfaceSubClass  = 0x02, // ACM
-        .bInterfaceProtocol  = 0x01, // AT commands
+        .bInterfaceProtocol  = 0x01,
         .iInterface          = 5
     },
-    .cdc_header = {
+    .cdc0_header = {
         .bLength             = sizeof(USB_CDC_HEADER_DESCRIPTOR),
         .bDescriptorType     = 0x24,
         .bDescriptorSubtype  = 0x00, // Header
         .bcdCDC              = 0x0110
     },
-    .cdc_call_mgmt = {
+    .cdc0_call_mgmt = {
         .bLength             = sizeof(USB_CDC_CALL_MGMT_DESCRIPTOR),
         .bDescriptorType     = 0x24,
-        .bDescriptorSubtype  = 0x01, // Call Management
+        .bDescriptorSubtype  = 0x01,
         .bmCapabilities      = 0x00,
         .bDataInterface      = 2
     },
-    .cdc_acm = {
+    .cdc0_acm = {
         .bLength             = sizeof(USB_CDC_ACM_DESCRIPTOR),
         .bDescriptorType     = 0x24,
-        .bDescriptorSubtype  = 0x02, // ACM
-        .bmCapabilities      = 0x02  // Line Coding & Serial State
+        .bDescriptorSubtype  = 0x02,
+        .bmCapabilities      = 0x02
     },
-    .cdc_union = {
+    .cdc0_union = {
         .bLength             = sizeof(USB_CDC_UNION_DESCRIPTOR),
         .bDescriptorType     = 0x24,
-        .bDescriptorSubtype  = 0x06, // Union
+        .bDescriptorSubtype  = 0x06,
         .bControlInterface   = 1,
         .bSubordinateInterface0 = 2
     },
-    .ep_cdc_notify = {
+    .ep_cdc0_notify = {
         .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
         .bEndpointAddress    = 0x82, // EP2 IN
@@ -164,8 +163,7 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .wMaxPacketSize      = 10,
         .bInterval           = 16
     },
-    // Interface 2: CDC-ACM Data
-    .intf_cdc_data = {
+    .intf_cdc0_data = {
         .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
         .bInterfaceNumber    = 2,
@@ -176,7 +174,7 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .bInterfaceProtocol  = 0x00,
         .iInterface          = 0
     },
-    .ep_cdc_out = {
+    .ep_cdc0_out = {
         .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
         .bEndpointAddress    = 0x03, // EP3 OUT
@@ -184,10 +182,94 @@ static const CONFIG_PLINK_COMPOSITE cfg_plink = {
         .wMaxPacketSize      = 512,
         .bInterval           = 0
     },
-    .ep_cdc_in = {
+    .ep_cdc0_in = {
         .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
         .bEndpointAddress    = 0x83, // EP3 IN
+        .bmAttributes        = 0x02, // Bulk
+        .wMaxPacketSize      = 512,
+        .bInterval           = 0
+    },
+
+    // IAD 2: CDC-ACM 1 (Secondary Target UART1 -> J3 Pins 11/12)
+    .iad_cdc1 = {
+        .bLength             = sizeof(USB_IAD_DESCRIPTOR),
+        .bDescriptorType     = 0x0B, // IAD
+        .bFirstInterface     = 3,
+        .bInterfaceCount     = 2,
+        .bFunctionClass      = 0x02, // CDC
+        .bFunctionSubClass   = 0x02, // ACM
+        .bFunctionProtocol   = 0x01, // AT commands
+        .iFunction           = 6     // "Plink UART1"
+    },
+    .intf_cdc1_comm = {
+        .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
+        .bInterfaceNumber    = 3,
+        .bAlternateSetting   = 0,
+        .bNumEndpoints       = 1,
+        .bInterfaceClass     = 0x02, // CDC Control
+        .bInterfaceSubClass  = 0x02, // ACM
+        .bInterfaceProtocol  = 0x01,
+        .iInterface          = 6
+    },
+    .cdc1_header = {
+        .bLength             = sizeof(USB_CDC_HEADER_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x00, // Header
+        .bcdCDC              = 0x0110
+    },
+    .cdc1_call_mgmt = {
+        .bLength             = sizeof(USB_CDC_CALL_MGMT_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x01,
+        .bmCapabilities      = 0x00,
+        .bDataInterface      = 4
+    },
+    .cdc1_acm = {
+        .bLength             = sizeof(USB_CDC_ACM_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x02,
+        .bmCapabilities      = 0x02
+    },
+    .cdc1_union = {
+        .bLength             = sizeof(USB_CDC_UNION_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x06,
+        .bControlInterface   = 3,
+        .bSubordinateInterface0 = 4
+    },
+    .ep_cdc1_notify = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x84, // EP4 IN
+        .bmAttributes        = 0x03, // Interrupt
+        .wMaxPacketSize      = 10,
+        .bInterval           = 16
+    },
+    .intf_cdc1_data = {
+        .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
+        .bInterfaceNumber    = 4,
+        .bAlternateSetting   = 0,
+        .bNumEndpoints       = 2,
+        .bInterfaceClass     = 0x0A, // CDC Data
+        .bInterfaceSubClass  = 0x00,
+        .bInterfaceProtocol  = 0x00,
+        .iInterface          = 0
+    },
+    .ep_cdc1_out = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x05, // EP5 OUT
+        .bmAttributes        = 0x02, // Bulk
+        .wMaxPacketSize      = 512,
+        .bInterval           = 0
+    },
+    .ep_cdc1_in = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x85, // EP5 IN
         .bmAttributes        = 0x02, // Bulk
         .wMaxPacketSize      = 512,
         .bInterval           = 0
@@ -262,10 +344,11 @@ static const uint8_t ms_os_20_desc[178] = {
 
 static const char *strings[] = {
     "Plink",
-    "Plink Probe & Serial Port",
+    "Plink Probe & Dual Serial Ports",
     "0204000100000002",
     "Plink CMSIS-DAP v2",
-    "Plink Virtual COM Port"
+    "Plink UART0 (Primary COM)",
+    "Plink UART1 (Secondary COM)"
 };
 
 // Helper network I/O
@@ -537,7 +620,8 @@ static void handle_client(int client_fd) {
 
     pending_in_init();
 
-    int uart_fd = -1;
+    int uart0_fd = -1;
+    int uart1_fd = -1;
 
     while (1) {
         if (!attached) {
@@ -571,26 +655,38 @@ static void handle_client(int client_fd) {
                 dev.bDeviceProtocol = dev_dsc.bDeviceProtocol;
                 dev.bConfigurationValue = 1;
                 dev.bNumConfigurations = 1;
-                dev.bNumInterfaces = 3;
+                dev.bNumInterfaces = 5;
 
-                OP_REP_DEVLIST_INTERFACE intf[3];
+                OP_REP_DEVLIST_INTERFACE intf[5];
                 // Interface 0: WinUSB (CMSIS-DAP)
                 intf[0].bInterfaceClass    = 0xFF;
                 intf[0].bInterfaceSubClass = 0x00;
                 intf[0].bInterfaceProtocol = 0x00;
                 intf[0].padding            = 0;
 
-                // Interface 1: CDC Comm
+                // Interface 1: CDC0 Comm (Primary UART0)
                 intf[1].bInterfaceClass    = 0x02;
                 intf[1].bInterfaceSubClass = 0x02;
                 intf[1].bInterfaceProtocol = 0x01;
                 intf[1].padding            = 0;
 
-                // Interface 2: CDC Data
+                // Interface 2: CDC0 Data
                 intf[2].bInterfaceClass    = 0x0A;
                 intf[2].bInterfaceSubClass = 0x00;
                 intf[2].bInterfaceProtocol = 0x00;
                 intf[2].padding            = 0;
+
+                // Interface 3: CDC1 Comm (Secondary UART1)
+                intf[3].bInterfaceClass    = 0x02;
+                intf[3].bInterfaceSubClass = 0x02;
+                intf[3].bInterfaceProtocol = 0x01;
+                intf[3].padding            = 0;
+
+                // Interface 4: CDC1 Data
+                intf[4].bInterfaceClass    = 0x0A;
+                intf[4].bInterfaceSubClass = 0x00;
+                intf[4].bInterfaceProtocol = 0x00;
+                intf[4].padding            = 0;
 
                 send_all(client_fd, &rep_hdr, sizeof(rep_hdr));
                 send_all(client_fd, &dev, sizeof(dev));
@@ -618,26 +714,39 @@ static void handle_client(int client_fd) {
                 rep.bDeviceProtocol = dev_dsc.bDeviceProtocol;
                 rep.bConfigurationValue = 1;
                 rep.bNumConfigurations = 1;
-                rep.bNumInterfaces = 3;
+                rep.bNumInterfaces = 5;
 
                 if (!send_all(client_fd, &rep, sizeof(rep))) break;
                 attached = true;
                 pending_in_init();
                 has_dap_resp = false;
 
-                // Connect loopback socket to local UART0 TCP bridge (:2000)
-                uart_fd = socket(AF_INET, SOCK_STREAM, 0);
-                if (uart_fd >= 0) {
-                    int flags = fcntl(uart_fd, F_GETFL, 0);
-                    fcntl(uart_fd, F_SETFL, flags | O_NONBLOCK);
+                // Connect non-blocking socket to local UART0 TCP bridge (:2000)
+                uart0_fd = socket(AF_INET, SOCK_STREAM, 0);
+                if (uart0_fd >= 0) {
+                    int flags = fcntl(uart0_fd, F_GETFL, 0);
+                    fcntl(uart0_fd, F_SETFL, flags | O_NONBLOCK);
                     struct sockaddr_in uaddr;
                     memset(&uaddr, 0, sizeof(uaddr));
                     uaddr.sin_family = AF_INET;
                     uaddr.sin_port = htons(2000);
                     uaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-                    connect(uart_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
+                    connect(uart0_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
                 }
-                printf("[USBIP] Device 1-1 (Plink Composite: WinUSB + CDC-ACM) imported. Connected to host.\n");
+
+                // Connect non-blocking socket to local UART1 TCP bridge (:2001)
+                uart1_fd = socket(AF_INET, SOCK_STREAM, 0);
+                if (uart1_fd >= 0) {
+                    int flags = fcntl(uart1_fd, F_GETFL, 0);
+                    fcntl(uart1_fd, F_SETFL, flags | O_NONBLOCK);
+                    struct sockaddr_in uaddr;
+                    memset(&uaddr, 0, sizeof(uaddr));
+                    uaddr.sin_family = AF_INET;
+                    uaddr.sin_port = htons(2001);
+                    uaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                    connect(uart1_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
+                }
+                printf("[USBIP] Device 1-1 (Plink Composite: WinUSB + Dual CDC-ACM) imported. Connected to host.\n");
             } else {
                 break;
             }
@@ -763,12 +872,12 @@ static void handle_client(int client_fd) {
                         }
                     }
                 } else if (cmd.ep == 2) {
-                    // EP2 IN: CDC Notification (Interrupt)
+                    // EP2 IN: CDC0 Notification (Interrupt)
                     static const uint8_t notify[10] = { 0xA1, 0x20, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00 };
                     uint32_t tx_len = (sizeof(notify) > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : sizeof(notify);
                     send_ret_submit(client_fd, &cmd, 0, notify, tx_len);
                 } else if (cmd.ep == 3) {
-                    // EP3: CDC Data (Bulk)
+                    // EP3: CDC0 Data (Primary Target UART0 -> J3 Pins 7/8)
                     if (cmd.direction == 0) { // OUT: Host writing to serial port
                         uint32_t rlen = cmd.transfer_buffer_length;
                         uint8_t ubuf[512];
@@ -783,15 +892,51 @@ static void handle_client(int client_fd) {
                                 excess -= chunk;
                             }
                         }
-                        if (uart_fd >= 0) {
-                            send(uart_fd, ubuf, to_read, MSG_NOSIGNAL);
+                        if (uart0_fd >= 0) {
+                            send(uart0_fd, ubuf, to_read, MSG_NOSIGNAL);
                         }
                         send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
                     } else { // IN: Host reading from serial port
                         uint8_t rx_buf[512];
                         ssize_t n_rx = 0;
-                        if (uart_fd >= 0) {
-                            n_rx = recv(uart_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
+                        if (uart0_fd >= 0) {
+                            n_rx = recv(uart0_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
+                            if (n_rx < 0) n_rx = 0;
+                        }
+                        uint32_t tx_len = (uint32_t)n_rx;
+                        if (tx_len > cmd.transfer_buffer_length) tx_len = cmd.transfer_buffer_length;
+                        send_ret_submit(client_fd, &cmd, 0, (tx_len > 0) ? rx_buf : NULL, tx_len);
+                    }
+                } else if (cmd.ep == 4) {
+                    // EP4 IN: CDC1 Notification (Interrupt)
+                    static const uint8_t notify[10] = { 0xA1, 0x20, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x03, 0x00 };
+                    uint32_t tx_len = (sizeof(notify) > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : sizeof(notify);
+                    send_ret_submit(client_fd, &cmd, 0, notify, tx_len);
+                } else if (cmd.ep == 5) {
+                    // EP5: CDC1 Data (Secondary Target UART1 -> J3 Pins 11/12)
+                    if (cmd.direction == 0) { // OUT: Host writing to serial port
+                        uint32_t rlen = cmd.transfer_buffer_length;
+                        uint8_t ubuf[512];
+                        uint32_t to_read = (rlen > sizeof(ubuf)) ? sizeof(ubuf) : rlen;
+                        if (!recv_all(client_fd, ubuf, to_read)) break;
+                        if (rlen > to_read) {
+                            uint32_t excess = rlen - to_read;
+                            uint8_t dummy[256];
+                            while (excess > 0) {
+                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
+                                if (!recv_all(client_fd, dummy, chunk)) break;
+                                excess -= chunk;
+                            }
+                        }
+                        if (uart1_fd >= 0) {
+                            send(uart1_fd, ubuf, to_read, MSG_NOSIGNAL);
+                        }
+                        send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
+                    } else { // IN: Host reading from serial port
+                        uint8_t rx_buf[512];
+                        ssize_t n_rx = 0;
+                        if (uart1_fd >= 0) {
+                            n_rx = recv(uart1_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
                             if (n_rx < 0) n_rx = 0;
                         }
                         uint32_t tx_len = (uint32_t)n_rx;
@@ -837,7 +982,8 @@ static void handle_client(int client_fd) {
         }
     }
 
-    if (uart_fd >= 0) close(uart_fd);
+    if (uart0_fd >= 0) close(uart0_fd);
+    if (uart1_fd >= 0) close(uart1_fd);
     close(client_fd);
     DAP_CONFIG_DISCONNECT();
     dap_activity_idle();

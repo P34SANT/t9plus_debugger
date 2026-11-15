@@ -47,12 +47,13 @@ module top_programmer (
     inout  wire        j3_target_io3,  // J3 Pin 21 (M14)
     inout  wire        j3_target_io4,  // J3 Pin 22 (M15)
 
-    // J4 Header: Additional Configurable Target I/O Pins (3.3V Bank 34/35)
-    inout  wire        j4_target_io5,  // J4 Pin 3  (V18)
-    inout  wire        j4_target_io6,  // J4 Pin 4  (V17)
-    inout  wire        j4_target_io7,  // J4 Pin 5  (Y16)
-    inout  wire        j4_target_io8,  // J4 Pin 6  (T16)
-    inout  wire        j4_target_io9,  // J4 Pin 7  (E17)
+    // J4 Header: Pod #2 (ST-LINK/V2) SWD & Target Interface (3.3V Bank 34/35)
+    output wire        j4_swclk,       // J4 Pin 3  (V18) - Target 2 SWCLK
+    inout  wire        j4_swdio,       // J4 Pin 4  (V17) - Target 2 SWDIO
+    inout  wire        j4_nrst,        // J4 Pin 5  (Y16) - Target 2 nRST (Reset)
+    input  wire        j4_swo,         // J4 Pin 6  (T16) - Target 2 SWO Trace Input
+    inout  wire        j4_target_io8,  // J4 Pin 7  (E17) - Auxiliary Target 2 I/O
+    inout  wire        j4_target_io9,  // J4 Pin 8  (D18) - Auxiliary Target 2 I/O
 
     // PL User LEDs - Kept solid OFF (3.3V Bank 35, Active-High 1'b0 = OFF)
     output wire        led_d7,         // LED7 (F16)
@@ -106,55 +107,89 @@ module top_programmer (
         .pl_uart1_tx(pl_uart1_tx_int),
         .pl_uart1_rx(pl_uart1_rx_int),
 
-        .swd_hw_en(swd_hw_en),
-        .hw_swclk_o(hw_swclk_o),
-        .hw_swdio_o(hw_swdio_o),
-        .hw_swdio_t(hw_swdio_t),
-        .hw_swdio_i(hw_swdio_i)
+        .swd_hw_en_0(swd_hw_en_0),
+        .hw_swclk_o_0(hw_swclk_o_0),
+        .hw_swdio_o_0(hw_swdio_o_0),
+        .hw_swdio_t_0(hw_swdio_t_0),
+        .hw_swdio_i_0(hw_swdio_i_0),
+
+        .swd_hw_en_1(swd_hw_en_1),
+        .hw_swclk_o_1(hw_swclk_o_1),
+        .hw_swdio_o_1(hw_swdio_o_1),
+        .hw_swdio_t_1(hw_swdio_t_1),
+        .hw_swdio_i_1(hw_swdio_i_1)
     );
 
     // =========================================================================
-    // SWD Interface Mapping on J3 Header:
-    // Dynamic Multiplexing between Hardware SWD Engine and EMIO GPIOs:
-    // When swd_hw_en == 1: Driven by FPGA Hardware Accelerator (100k-50MHz)
-    // When swd_hw_en == 0: Driven by EMIO Software Bit-Bang (Fail-Safe Fallback)
-    //
-    // J3 Pin 3 (P16): SWCLK
-    // J3 Pin 4 (P15): SWDIO (Bidirectional IOBUF)
-    // J3 Pin 5 (T14): nRST  (Bidirectional Open-Drain IOBUF)
+    // Target Pod #1 SWD Interface (Header J3):
+    // J3 Pin 3 (P16): SWCLK0
+    // J3 Pin 4 (P15): SWDIO0 (Bidirectional IOBUF)
+    // J3 Pin 5 (T14): nRST0  (Bidirectional Open-Drain IOBUF)
     // =========================================================================
-    wire swd_hw_en;
-    wire hw_swclk_o;
-    wire hw_swdio_o;
-    wire hw_swdio_t;
-    wire hw_swdio_i;
-    wire pin_swdio_i;
+    wire swd_hw_en_0;
+    wire hw_swclk_o_0;
+    wire hw_swdio_o_0;
+    wire hw_swdio_t_0;
+    wire hw_swdio_i_0;
+    wire pin_swdio_i_0;
 
-    assign hw_swdio_i     = pin_swdio_i;
-    assign j3_swclk       = swd_hw_en ? hw_swclk_o : emio_gpio_o[0];
+    assign hw_swdio_i_0   = pin_swdio_i_0;
+    assign j3_swclk       = swd_hw_en_0 ? hw_swclk_o_0 : emio_gpio_o[0];
     assign emio_gpio_i[0] = j3_swclk;
 
-    IOBUF iobuf_swdio (
+    IOBUF iobuf_swdio_0 (
         .IO(j3_swdio),
-        .O (pin_swdio_i),
-        .I (swd_hw_en ? hw_swdio_o : emio_gpio_o[1]),
-        .T (swd_hw_en ? hw_swdio_t : emio_gpio_t[1])
+        .O (pin_swdio_i_0),
+        .I (swd_hw_en_0 ? hw_swdio_o_0 : emio_gpio_o[1]),
+        .T (swd_hw_en_0 ? hw_swdio_t_0 : emio_gpio_t[1])
     );
-    assign emio_gpio_i[1] = pin_swdio_i;
+    assign emio_gpio_i[1] = pin_swdio_i_0;
 
-    IOBUF iobuf_nrst (
+    IOBUF iobuf_nrst_0 (
         .IO(j3_nrst),
         .O (emio_gpio_i[2]),
         .I (emio_gpio_o[2]),
         .T (emio_gpio_t[2])
     );
 
-    assign emio_gpio_i[3] = 1'b0; // BOOT0 not used
+    assign emio_gpio_i[3] = 1'b0; // BOOT0
+
+    // =========================================================================
+    // Target Pod #2 SWD Interface (Header J4):
+    // J4 Pin 3 (V18): SWCLK1 (Driven by axi_swd_1 @ 0x43C10000)
+    // J4 Pin 4 (V17): SWDIO1 (Bidirectional IOBUF)
+    // J4 Pin 5 (Y16): nRST1  (Bidirectional Open-Drain IOBUF)
+    // =========================================================================
+    wire swd_hw_en_1;
+    wire hw_swclk_o_1;
+    wire hw_swdio_o_1;
+    wire hw_swdio_t_1;
+    wire hw_swdio_i_1;
+    wire pin_swdio_i_1;
+
+    assign hw_swdio_i_1   = pin_swdio_i_1;
+    assign j4_swclk       = swd_hw_en_1 ? hw_swclk_o_1 : emio_gpio_o[9];
+    assign emio_gpio_i[9] = j4_swclk;
+
+    IOBUF iobuf_swdio_1 (
+        .IO(j4_swdio),
+        .O (pin_swdio_i_1),
+        .I (swd_hw_en_1 ? hw_swdio_o_1 : emio_gpio_o[10]),
+        .T (swd_hw_en_1 ? hw_swdio_t_1 : emio_gpio_t[10])
+    );
+    assign emio_gpio_i[10] = pin_swdio_i_1;
+
+    IOBUF iobuf_nrst_1 (
+        .IO(j4_nrst),
+        .O (emio_gpio_i[11]),
+        .I (emio_gpio_o[11]),
+        .T (emio_gpio_t[11])
+    );
 
     // =========================================================================
     // Configurable Target I/Os:
     // EMIO 4..8  (Linux Lines 58..62) -> J3 Pins 15, 17, 18, 21, 22
-    // EMIO 9..13 (Linux Lines 63..67) -> J4 Pins 3, 4, 5, 6, 7
+    // EMIO 12..13(Linux Lines 66..67) -> J4 Pins 7, 8
     // =========================================================================
     IOBUF iobuf_target0 (.IO(j3_target_io0), .O(emio_gpio_i[4]), .I(emio_gpio_o[4]), .T(emio_gpio_t[4]));
     IOBUF iobuf_target1 (.IO(j3_target_io1), .O(emio_gpio_i[5]), .I(emio_gpio_o[5]), .T(emio_gpio_t[5]));
@@ -162,9 +197,6 @@ module top_programmer (
     IOBUF iobuf_target3 (.IO(j3_target_io3), .O(emio_gpio_i[7]), .I(emio_gpio_o[7]), .T(emio_gpio_t[7]));
     IOBUF iobuf_target4 (.IO(j3_target_io4), .O(emio_gpio_i[8]), .I(emio_gpio_o[8]), .T(emio_gpio_t[8]));
 
-    IOBUF iobuf_target5 (.IO(j4_target_io5), .O(emio_gpio_i[9]),  .I(emio_gpio_o[9]),  .T(emio_gpio_t[9]));
-    IOBUF iobuf_target6 (.IO(j4_target_io6), .O(emio_gpio_i[10]), .I(emio_gpio_o[10]), .T(emio_gpio_t[10]));
-    IOBUF iobuf_target7 (.IO(j4_target_io7), .O(emio_gpio_i[11]), .I(emio_gpio_o[11]), .T(emio_gpio_t[11]));
     IOBUF iobuf_target8 (.IO(j4_target_io8), .O(emio_gpio_i[12]), .I(emio_gpio_o[12]), .T(emio_gpio_t[12]));
     IOBUF iobuf_target9 (.IO(j4_target_io9), .O(emio_gpio_i[13]), .I(emio_gpio_o[13]), .T(emio_gpio_t[13]));
 

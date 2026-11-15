@@ -57,7 +57,9 @@ def load_bit(filepath):
     elif filepath.endswith('.bin'):
         target_fw = base
         os.makedirs("/lib/firmware", exist_ok=True)
-        shutil.copyfile(filepath, f"/lib/firmware/{target_fw}")
+        dst_fw = f"/lib/firmware/{target_fw}"
+        if os.path.abspath(filepath) != os.path.abspath(dst_fw):
+            shutil.copyfile(filepath, dst_fw)
     else:
         print(f"ERROR: Unrecognized file extension: {filepath}. Expected .bit or .bin", file=sys.stderr)
         sys.exit(1)

@@ -126,21 +126,29 @@ typedef struct __attribute__ ((__packed__)) {
     USB_ENDPOINT_DESCRIPTOR      ep_dap_out; // EP1 OUT Bulk
     USB_ENDPOINT_DESCRIPTOR      ep_dap_in;  // EP1 IN Bulk
 
-    // Interface Association Descriptor for CDC-ACM
-    USB_IAD_DESCRIPTOR           iad_cdc;
+    // IAD 1: CDC-ACM 0 (Primary UART0)
+    USB_IAD_DESCRIPTOR           iad_cdc0;
+    USB_INTERFACE_DESCRIPTOR     intf_cdc0_comm;
+    USB_CDC_HEADER_DESCRIPTOR    cdc0_header;
+    USB_CDC_CALL_MGMT_DESCRIPTOR cdc0_call_mgmt;
+    USB_CDC_ACM_DESCRIPTOR       cdc0_acm;
+    USB_CDC_UNION_DESCRIPTOR     cdc0_union;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc0_notify; // EP2 IN Interrupt
+    USB_INTERFACE_DESCRIPTOR     intf_cdc0_data;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc0_out;    // EP3 OUT Bulk
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc0_in;     // EP3 IN Bulk
 
-    // Interface 1: CDC Communication
-    USB_INTERFACE_DESCRIPTOR     intf_cdc_comm;
-    USB_CDC_HEADER_DESCRIPTOR    cdc_header;
-    USB_CDC_CALL_MGMT_DESCRIPTOR cdc_call_mgmt;
-    USB_CDC_ACM_DESCRIPTOR       cdc_acm;
-    USB_CDC_UNION_DESCRIPTOR     cdc_union;
-    USB_ENDPOINT_DESCRIPTOR      ep_cdc_notify; // EP2 IN Interrupt
-
-    // Interface 2: CDC Data
-    USB_INTERFACE_DESCRIPTOR     intf_cdc_data;
-    USB_ENDPOINT_DESCRIPTOR      ep_cdc_out;    // EP3 OUT Bulk
-    USB_ENDPOINT_DESCRIPTOR      ep_cdc_in;     // EP3 IN Bulk
+    // IAD 2: CDC-ACM 1 (Secondary UART1)
+    USB_IAD_DESCRIPTOR           iad_cdc1;
+    USB_INTERFACE_DESCRIPTOR     intf_cdc1_comm;
+    USB_CDC_HEADER_DESCRIPTOR    cdc1_header;
+    USB_CDC_CALL_MGMT_DESCRIPTOR cdc1_call_mgmt;
+    USB_CDC_ACM_DESCRIPTOR       cdc1_acm;
+    USB_CDC_UNION_DESCRIPTOR     cdc1_union;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc1_notify; // EP4 IN Interrupt
+    USB_INTERFACE_DESCRIPTOR     intf_cdc1_data;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc1_out;    // EP5 OUT Bulk
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc1_in;     // EP5 IN Bulk
 } CONFIG_PLINK_COMPOSITE;
 
 typedef struct __attribute__ ((__packed__)) {
