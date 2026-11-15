@@ -27,6 +27,52 @@ Transform any Antminer T9+ Control Board (Xilinx Zynq XC7Z010-1CLG400C) into **P
 
 ---
 
+## Quick-Start Guide (Windows Setup)
+
+### Step 0: Prerequisite — Install USB/IP Drivers on Windows
+Before connecting Plink to your Windows PC, you must have the signed USB/IP UDE virtual host controller driver installed:
+1. Download the latest release installer from the official repository:
+   👉 **[USB/IP Client for Windows (WHLK Certified Driver)](https://github.com/vadimgrn/usbip-win2/releases)**
+2. Run the installer (e.g. `usbip-win2_x64_*.exe`) and complete the setup.
+   - *Default Installation Path:* `C:\Program Files\USBip\` (already configured in Plink tools).
+   - *Note:* All existing USB 3.0 hubs will momentarily restart during driver installation.
+
+---
+
+### Step 1: Connect Plink (Choose Option A or Option B)
+
+Ensure your Antminer T9+ board is powered on and connected via Ethernet (default IP: `192.168.2.99`). Then choose **either** the automatic tray app or manual batch script:
+
+#### Option A: Background Tray App (Recommended — Zero-Click Auto-Attach)
+1. Double-click **`plink-tray.exe`** (in the repository root).
+2. It sits quietly in the Windows notification tray with an embedded icon.
+3. As soon as the board is detected, it automatically attaches all hardware devices in the background with **zero terminal popups**:
+   - `Plink CMSIS-DAP v2` (WinUSB Hardware Debug Probe)
+   - `USB Serial Device (COM9)` (Primary Target UART0, 9600 to 921600+ baud)
+   - `USB Serial Device (COM10)` (Secondary Target UART1)
+4. *Tip:* Place a shortcut of `plink-tray.exe` in your Windows Startup folder (`Win + R` -> `shell:startup`) for fully automated connection every time you log into your PC.
+
+#### Option B: One-Click Batch Script (Manual Connection)
+1. Double-click **`attach_t9.bat`** (in the repository root).
+2. The script automatically:
+   - Pings `192.168.2.99` to ensure the board is reachable.
+   - Restarts the virtual USB root hub to flush any stale or duplicate ports.
+   - Attaches the CMSIS-DAP v2 probe and dual COM ports cleanly.
+3. Open your preferred IDE (**Keil µVision, IAR EWARM, STM32CubeIDE, OpenOCD, pyOCD**) and begin debugging immediately.
+
+---
+
+### Step 2: Access the Web Dashboard & UART Flasher
+Open your browser and navigate to:
+```text
+http://192.168.2.99:8080
+```
+- **01 // Pin Mapping Matrix:** Interactive physical 2x12 pinout diagrams for Header J3 & J4 with live logic telemetry.
+- **02 // Target Programming:** High-speed firmware flasher for STM32 and ESP32 with real-time log streaming.
+- **03 // Target Console:** Web-based serial terminal for Target UART0 (`COM9`).
+
+---
+
 ## Device Support & Testing Status
 
 | Device / Architecture | Protocol / Interface | Status | Test Details & Verification Notes |
@@ -83,28 +129,3 @@ All SWD, UART, and target control lines are routed to the **J3 expansion header*
 | :--- | :--- | :--- | :--- |
 | **Primary UART0** | J3 Pins 7 & 8 | **9,600 to 921,600+ baud** (Dynamic) | Driven by Zynq PS hardware UART controller (`/dev/ttyPS1`). Full dynamic clock divisor supporting all standard baud rates. Bridged to native Windows `COMx` and TCP `:2000`. |
 | **Secondary UART1**| J3 Pins 11 & 12| **115,200 baud** (Fixed) | Driven by AXI UARTLite PL core. Fixed clock divider synthesized in bitstream. Bridged to TCP `:2001`. |
-
----
-
-## Windows Client Setup
-
-### Automatic Connection (Recommended)
-1. Run **`plink-tray.exe`** (in project root).
-2. It appears in the notification tray and automatically links USB/IP when the pod is detected.
-3. Windows Device Manager will show:
-   - `Plink CMSIS-DAP v2` under **Universal Serial Bus devices** (WinUSB).
-   - `USB Serial Device (COMx)` under **Ports (COM & LPT)** (native CDC-ACM).
-
-### Manual Batch Script
-Run `attach_t9.bat` from Windows cmd or PowerShell to link USB/IP on demand.
-
----
-
-## Web Dashboard & Flasher
-Access the web dashboard at:
-```text
-http://192.168.2.99:8080
-```
-- **01 // Dashboard & States:** Live system diagnostics, hardware reset controls, and embedded serial terminal.
-- **02 // UART Programming:** High-speed firmware flashing for STM32 and ESP32 with real-time log streaming.
-- **03 // Pin Telemetry & Hardware:** Live J3 header logic levels.
