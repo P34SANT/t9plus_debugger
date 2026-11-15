@@ -58,8 +58,29 @@ extern bool swd_hw_available;
 #define SWD_REG_RAW_LEN     0x14
 #define SWD_REG_ID          0x18
 
+static inline bool is_fpga_operating(void) {
+    FILE *f = fopen("/sys/class/fpga_manager/fpga0/state", "r");
+    if (!f) return false;
+    char state[32] = {0};
+    if (!fgets(state, sizeof(state), f)) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    return (strncmp(state, "operating", 9) == 0);
+}
+
 static inline int zynq_swd_hw_init(void) {
     if (swd_hw_mem != NULL) return 0;
+
+    // Fail-safe protection: NEVER touch /dev/mem at PL addresses if FPGA is not operating!
+    if (!is_fpga_operating()) {
+        printf("[WARN] FPGA PL is not operating. Hardware acceleration disabled safely.\n");
+        swd_hw_available = false;
+        swd_hw_mem = NULL;
+        return 0;
+    }
+
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) return -1;
     swd_hw_mem = (volatile uint32_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SWD_HW_BASE);

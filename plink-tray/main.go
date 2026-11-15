@@ -162,13 +162,11 @@ func setTrayState(online bool, attached bool, balloonTitle string, balloonMsg st
 	isOnline = online
 	isAttached = attached
 
-	statusText := fmt.Sprintf("Plink Debug Pod [%s]\nStatus: ", BOARD_IP)
+	statusText := fmt.Sprintf("Plink Pod [%s]\nStatus: ", BOARD_IP)
 	if attached {
-		statusText += "ATTACHED (CMSIS-DAP + COM Port)"
-	} else if online {
-		statusText += "ONLINE (Detached)"
+		statusText += "Connected"
 	} else {
-		statusText += "OFFLINE (Waiting for board)"
+		statusText += "Closed"
 	}
 
 	copyUTF16(nidMain.szTip[:], statusText)
@@ -202,15 +200,15 @@ func isUsbipPortAttached() bool {
 }
 
 func attachUsbip() bool {
-	if !isUsbipPortAttached() {
-		cmd := exec.Command(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
-		cmd.Run()
-	}
+	cmd1 := exec.Command(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
+	cmd1.Run()
+	cmd2 := exec.Command(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-2")
+	cmd2.Run()
 	return isUsbipPortAttached()
 }
 
 func detachUsbip() {
-	cmd := exec.Command(USBIP_PATH, "detach", "-p", "1")
+	cmd := exec.Command(USBIP_PATH, "detach", "-a")
 	cmd.Run()
 }
 
@@ -251,9 +249,9 @@ func startEventDrivenMonitor() {
 			}
 
 			if attached {
-				setTrayState(true, true, "Plink Connected", "Plink Pod attached: CMSIS-DAP + Virtual COM Port ready.")
+				setTrayState(true, true, "Plink Connected", "Pod connected (CMSIS-DAP + Serial).")
 			} else {
-				setTrayState(true, false, "Plink Online", "Board is online at 192.168.2.99")
+				setTrayState(true, false, "Plink Connected", "Pod online at 192.168.2.99")
 			}
 
 			// PASSIVE EVENT WAIT: Block on reading the socket.
@@ -267,7 +265,7 @@ func startEventDrivenMonitor() {
 
 			// Socket broke: Board disconnected or reset!
 			if rerr == io.EOF || rerr != nil {
-				setTrayState(false, false, "Plink Disconnected", "Connection to Plink pod lost.")
+				setTrayState(false, false, "Plink Closed", "Connection closed.")
 			}
 
 			// Small pause to allow board network interface to reset cleanly
@@ -289,11 +287,11 @@ func showContextMenu(hwnd uintptr) {
 	auto := autoAttach
 	stateMu.Unlock()
 
-	statusHeader := "Plink: OFFLINE"
+	statusHeader := "Plink: Closed"
 	if attached {
-		statusHeader = fmt.Sprintf("Plink: CONNECTED [%s]", BOARD_IP)
+		statusHeader = fmt.Sprintf("Plink: Connected [%s]", BOARD_IP)
 	} else if online {
-		statusHeader = fmt.Sprintf("Plink: ONLINE [%s]", BOARD_IP)
+		statusHeader = fmt.Sprintf("Plink: Connected (Detached) [%s]", BOARD_IP)
 	}
 
 	pAppendMenuW.Call(hMenu, MF_STRING|MF_GRAYED, CMD_HEADER, uintptr(unsafe.Pointer(utf16Ptr(statusHeader))))

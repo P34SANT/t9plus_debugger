@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS ?= -O2 -Wall -I.
 LDFLAGS ?= 
 
-SRCS = usbip_server.c DAP.c
+SRCS = usbip_server.c DAP.c ../stlink/stlink_swd.c
 OBJS = $(SRCS:.c=.o)
 TARGET = t9-cmsis-dap
 

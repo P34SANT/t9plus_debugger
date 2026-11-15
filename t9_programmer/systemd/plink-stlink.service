@@ -1,0 +1,16 @@
+[Unit]
+Description=Plink ST-LINK/V2 Debug Server (Target Pod #2 -> Header J4)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/xilinx/t9_programmer/stlink
+ExecStart=/home/xilinx/t9_programmer/stlink/plink-stlink
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

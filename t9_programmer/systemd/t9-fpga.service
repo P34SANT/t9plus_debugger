@@ -6,6 +6,7 @@ Before=t9-openocd.service t9-uart-bridge.service t9-io-daemon.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+TimeoutStartSec=10
 ExecStart=/usr/bin/python3 /home/xilinx/t9_programmer/scripts/t9_load_bit.py /home/xilinx/t9_programmer/bitstream/t9_programmer_pcap.bin
 StandardOutput=journal
 StandardError=journal

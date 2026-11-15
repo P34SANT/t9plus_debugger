@@ -342,205 +342,297 @@ def flash_esp32_uart(firmware_path, address="0x1000", baud=115200, verify=True, 
 # ==============================================================================
 # Plink HTML5 Dashboard
 # ==============================================================================
+# ==============================================================================
+# Plink Cyber-Industrial Dashboard
+# ==============================================================================
 ENTERPRISE_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Plink // Programmer & Debug Pod</title>
+<title>Plink // Hardware Debug &amp; Programming Pod</title>
 <style>
   :root {
-    --bg-main: #090d16;
-    --bg-panel: #111827;
-    --bg-sub: #1f2937;
-    --border: #374151;
-    --primary: #38bdf8;
-    --emerald: #10b981;
-    --amber: #f59e0b;
-    --red: #ef4444;
-    --text: #f3f4f6;
-    --text-muted: #9ca3af;
+    --bg-base: #06090e;
+    --bg-surface: #0c1017;
+    --bg-card: #121824;
+    --bg-alt: #1a2232;
+    --border: #222f3e;
+    --border-accent: #00f0ff;
+    --cyan: #00f0ff;
+    --green: #00ff66;
+    --amber: #ffb000;
+    --red: #ff3344;
+    --text-primary: #e6edf3;
+    --text-muted: #7d8590;
+    --font-mono: "JetBrains Mono", Consolas, "Courier New", monospace;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0 !important; }
   body {
-    background: var(--bg-main);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
-    font-size: 13px;
-    padding: 16px;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 14px;
   }
   .header {
     display: flex; justify-content: space-between; align-items: center;
-    border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 14px;
+    border-bottom: 2px solid var(--border); padding-bottom: 10px; margin-bottom: 12px;
   }
   .title-group { display: flex; align-items: center; gap: 10px; }
-  .title { font-size: 1.2rem; font-weight: 800; letter-spacing: 0.5px; color: #fff; }
-  .title span { color: var(--primary); }
-  .badge { background: #1e3a8a; color: #93c5fd; padding: 3px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; }
-  .badge-emerald { background: #064e3b; color: #6ee7b7; }
-  
-  .tabs {
-    display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+  .title { font-size: 1.15rem; font-weight: 800; letter-spacing: 1px; color: #fff; font-family: var(--font-mono); }
+  .title span { color: var(--cyan); }
+  .tag {
+    background: #0d1b2a; color: var(--cyan); border: 1px solid #1b4965;
+    padding: 2px 6px; font-size: 10px; font-family: var(--font-mono); font-weight: 700;
   }
-  .tab-btn {
-    background: transparent; color: var(--text-muted); border: none; border-bottom: 2px solid transparent;
-    padding: 8px 16px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
-    cursor: pointer; transition: all 0.15s;
-  }
-  .tab-btn:hover { color: #fff; }
-  .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .tag-green { background: #062817; color: var(--green); border-color: #0b5e32; }
 
-  .tab-content { display: none; gap: 16px; }
-  .tab-content.active { display: grid; }
-  
-  .layout-2col { grid-template-columns: 460px 1fr; }
-  .layout-1col { grid-template-columns: 1fr; }
-  
+  .nav-tabs {
+    display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 14px;
+    background: var(--bg-surface);
+  }
+  .nav-btn {
+    background: transparent; color: var(--text-muted); border: 1px solid transparent;
+    border-bottom: 2px solid transparent; padding: 8px 14px; font-size: 11px;
+    font-weight: 700; font-family: var(--font-mono); letter-spacing: 0.5px;
+    cursor: pointer; text-transform: uppercase; transition: all 0.1s;
+  }
+  .nav-btn:hover { color: #fff; background: rgba(0,240,255,0.05); }
+  .nav-btn.active {
+    color: var(--cyan); background: var(--bg-card);
+    border-top: 1px solid var(--border); border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border); border-bottom: 2px solid var(--cyan);
+  }
+
+  .tab-pane { display: none; gap: 14px; }
+  .tab-pane.active { display: grid; }
+  .col-2 { grid-template-columns: 480px 1fr; }
+  .col-1 { grid-template-columns: 1fr; }
+
   .panel {
-    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px;
-    display: flex; flex-direction: column; gap: 12px;
+    background: var(--bg-surface); border: 1px solid var(--border); padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
   }
-  .panel-title {
-    font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700;
-    color: var(--text-muted); border-bottom: 1px solid var(--border); padding-bottom: 6px;
-    display: flex; justify-content: space-between; align-items: center;
+  .panel-header {
+    font-size: 11px; text-transform: uppercase; font-family: var(--font-mono); font-weight: 700;
+    letter-spacing: 0.8px; color: var(--cyan); border-bottom: 1px solid var(--border);
+    padding-bottom: 6px; display: flex; justify-content: space-between; align-items: center;
   }
-  .form-group { display: flex; flex-direction: column; gap: 4px; }
-  label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
-  select, input[type="text"] {
-    background: var(--bg-main); border: 1px solid var(--border); color: #fff;
-    padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; outline: none;
+
+  /* Physical 2x12 Header Matrix Diagram */
+  .matrix-container {
+    background: var(--bg-base); border: 1px solid var(--border); padding: 12px;
+    display: flex; flex-direction: column; gap: 6px; overflow-x: auto;
   }
-  select:focus, input[type="text"]:focus { border-color: var(--primary); }
-  .dropzone {
-    border: 2px dashed var(--border); border-radius: 6px; padding: 20px; text-align: center;
-    background: rgba(17, 24, 39, 0.4); cursor: pointer; transition: all 0.15s;
+  .matrix-row { display: flex; gap: 4px; }
+  .pin-node {
+    flex: 1; min-width: 68px; height: 58px; background: var(--bg-card);
+    border: 1px solid var(--border); padding: 4px 6px; display: flex;
+    flex-direction: column; justify-content: space-between; font-family: var(--font-mono);
+    cursor: pointer; transition: all 0.1s;
   }
-  .dropzone:hover, .dropzone.dragover { border-color: var(--primary); background: rgba(56, 189, 248, 0.05); }
+  .pin-node:hover { border-color: var(--cyan); background: var(--bg-alt); }
+  .pin-num { font-size: 9.5px; color: var(--text-muted); font-weight: 700; }
+  .pin-sig { font-size: 10.5px; font-weight: 700; color: #fff; }
+  .pin-fpga { font-size: 9px; color: var(--cyan); }
+  
+  .pin-gnd { background: #0b0f14; border-color: #1a222d; opacity: 0.8; }
+  .pin-gnd .pin-sig { color: #57606a; }
+  .pin-pwr { background: #261214; border-color: #4a1e22; }
+  .pin-pwr .pin-sig { color: #ff7b72; }
+  .pin-swd { background: #061c24; border-color: #0b3d4f; }
+  .pin-swd .pin-sig { color: var(--cyan); }
+  .pin-uart { background: #1c1808; border-color: #423812; }
+  .pin-uart .pin-sig { color: var(--amber); }
+
   .btn {
-    background: #0284c7; color: #fff; border: none; padding: 7px 12px; border-radius: 4px;
-    font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    background: #0e3a53; color: var(--cyan); border: 1px solid #175276;
+    padding: 6px 12px; font-size: 11px; font-weight: 700; font-family: var(--font-mono);
+    letter-spacing: 0.5px; cursor: pointer; text-transform: uppercase;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   }
-  .btn:hover { filter: brightness(1.1); }
-  .btn:active { filter: brightness(0.9); }
-  .btn-emerald { background: var(--emerald); color: #000; font-weight: 700; }
-  .btn-amber { background: var(--amber); color: #000; font-weight: 700; }
-  .btn-red { background: var(--red); }
-  .btn-dark { background: var(--bg-sub); border: 1px solid var(--border); }
-  .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn:hover { background: #154c6d; border-color: var(--cyan); color: #fff; }
+  .btn:active { background: #0b2d42; }
+  .btn-green { background: #08331e; color: var(--green); border-color: #0d5934; }
+  .btn-green:hover { background: #0c4d2d; border-color: var(--green); color: #fff; }
+  .btn-amber { background: #332608; color: var(--amber); border-color: #5c450e; }
+  .btn-amber:hover { background: #4d390c; border-color: var(--amber); color: #fff; }
+  .btn-red { background: #330b10; color: var(--red); border-color: #5c141d; }
+  .btn-red:hover { background: #4d1018; border-color: var(--red); color: #fff; }
+  .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
   .terminal {
-    background: #030712; border: 1px solid #1f2937; border-radius: 4px; padding: 10px;
-    font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; line-height: 1.45;
-    color: #e5e7eb; height: 380px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+    background: #020408; border: 1px solid var(--border); padding: 8px 10px;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: #d1d5db;
+    height: 380px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
   }
-  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
-  th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
-  th { color: var(--text-muted); font-size: 10.5px; text-transform: uppercase; }
-  .serial-box { display: flex; gap: 8px; margin-top: 6px; }
+  .dropzone {
+    border: 1px dashed var(--border); background: rgba(18, 24, 36, 0.5);
+    padding: 18px; text-align: center; cursor: pointer; transition: all 0.15s;
+  }
+  .dropzone:hover, .dropzone.dragover { border-color: var(--cyan); background: rgba(0, 240, 255, 0.04); }
+  
+  select, input[type="text"] {
+    background: var(--bg-base); border: 1px solid var(--border); color: #fff;
+    padding: 6px 8px; font-family: var(--font-mono); font-size: 11px; outline: none;
+  }
+  select:focus, input[type="text"]:focus { border-color: var(--cyan); }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); }
+  th, td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { color: var(--text-muted); font-size: 10px; text-transform: uppercase; background: var(--bg-card); }
+  .serial-box { display: flex; gap: 6px; }
   .serial-input { flex: 1; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-  .dot-green { background: var(--emerald); box-shadow: 0 0 6px var(--emerald); }
-  .dot-amber { background: var(--amber); }
 </style>
 </head>
 <body>
 
 <div class="header">
   <div class="title-group">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="28" height="28" style="vertical-align:middle; filter:drop-shadow(0 0 6px rgba(56,189,248,0.5));">
-      <rect width="128" height="128" rx="28" fill="#0b1120" stroke="#1e293b" stroke-width="4"/>
-      <path d="M 36 94 L 36 34 L 70 34 C 84 34, 92 42, 92 54 C 92 66, 84 74, 70 74 L 52 74" fill="none" stroke="#38bdf8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M 66 46 L 58 58 L 72 58 L 62 70" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="36" cy="94" r="8" fill="#10b981"/>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="24" height="24" style="vertical-align:middle;">
+      <rect width="128" height="128" fill="#0b1120" stroke="#00f0ff" stroke-width="6"/>
+      <path d="M 36 94 L 36 34 L 70 34 C 84 34, 92 42, 92 54 C 92 66, 84 74, 70 74 L 52 74" fill="none" stroke="#00f0ff" stroke-width="14"/>
+      <path d="M 66 46 L 58 58 L 72 58 L 62 70" fill="none" stroke="#00ff66" stroke-width="6"/>
+      <circle cx="36" cy="94" r="8" fill="#00ff66"/>
     </svg>
-    <div class="title">Plink <span>// Programmer &amp; Debug Pod</span></div>
-    <span class="badge badge-emerald">FPGA 25MHz SWD ACTIVE</span>
-    <span class="badge">NATIVE COM PORT (CDC-ACM)</span>
+    <div class="title">Plink <span>// HARDWARE DEBUG &amp; PROGRAMMING POD</span></div>
+    <span class="tag tag-green">FPGA 25MHz SWD ACTIVE</span>
+    <span class="tag">DUAL COM (COM9 / COM10)</span>
   </div>
-  <div style="display:flex; gap:8px;">
-    <span class="badge">IP: 192.168.2.99</span>
-    <span class="badge">PORTS: 3240 / 2000 / 2001 / 8080</span>
-  </div>
-</div>
-
-<div class="tabs">
-  <button class="tab-btn active" id="btn-tab-dashboard" onclick="switchTab('tab-dashboard')">01 // Dashboard &amp; States</button>
-  <button class="tab-btn" id="btn-tab-flasher" onclick="switchTab('tab-flasher')">02 // UART Programming</button>
-  <button class="tab-btn" id="btn-tab-pins" onclick="switchTab('tab-pins')">03 // Pin Telemetry &amp; Hardware</button>
-</div>
-
-<!-- ========================================================================= -->
-<!-- TAB 1: DASHBOARD & STATES (HOME) -->
-<!-- ========================================================================= -->
-<div class="tab-content layout-2col active" id="tab-dashboard">
-  <div class="panel">
-    <div class="panel-title">
-      <span>Pod State &amp; Target Hardware Overview</span>
-      <span style="color:var(--emerald);"><span class="dot dot-green"></span>OPERATING</span>
-    </div>
-
-    <div style="display:flex; flex-direction:column; gap:8px; font-size:12px;">
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">Hardware Platform:</span>
-        <strong>Bitmain Antminer T9+ (Zynq XC7Z010-1CLG400C)</strong>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">FPGA Acceleration Core:</span>
-        <strong style="color:var(--primary);">axi_swd_engine.v @ 25.0 MHz (100% Timing Met)</strong>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">USB Device Architecture:</span>
-        <strong>Composite (WinUSB CMSIS-DAP v2 + CDC-ACM COM)</strong>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">Primary Target UART0:</span>
-        <strong>J3 Pins 7/8 (TX:C20, RX:B20) &bull; TCP:2000 &bull; 9600-921600</strong>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">Secondary Target UART1:</span>
-        <strong>J3 Pins 11/12 (TX:P14, RX:R14) &bull; TCP:2001 &bull; 115200</strong>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:5px;">
-        <span style="color:var(--text-muted);">Windows Tray Auto-Attach:</span>
-        <strong style="color:var(--emerald);">plink-tray.exe (Event-Driven · 0% Polling)</strong>
-      </div>
-    </div>
-
-    <div class="panel-title" style="margin-top:6px;">Target Hardware Control</div>
-    <div class="btn-group">
-      <button class="btn btn-red" onclick="actionReset()">Pulse nRST (50ms)</button>
-      <button class="btn btn-amber" onclick="actionBootloader()">Enter STM32 Bootloader</button>
-      <button class="btn btn-dark" onclick="actionNormalRun()">Normal Run (BOOT0=0)</button>
-      <button class="btn btn-dark" onclick="actionEspBootloader()">ESP32 Handshake (IO0+EN)</button>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="panel-title">
-      <span>Target Live Console (UART0 115200 8N1 · J3 Pins 7/8)</span>
-      <span class="badge badge-emerald">STREAM ACTIVE</span>
-    </div>
-    <div class="terminal" id="dash-serial-terminal" style="height:340px;"></div>
-    <div class="serial-box">
-      <input type="text" class="serial-input" id="dash-serial-input" placeholder="Type target CLI command &amp; press Enter..." onkeydown="if(event.key==='Enter')sendSerial('dash-serial-input')">
-      <button class="btn btn-dark" onclick="sendSerial('dash-serial-input')">Send</button>
-      <button class="btn btn-dark" onclick="document.getElementById('dash-serial-terminal').textContent=''">Clear</button>
-    </div>
+  <div style="display:flex; gap:6px;">
+    <span class="tag">IP: 192.168.2.99</span>
+    <span class="tag">PORTS: 3240 / 3241 / 2000 / 2001 / 8080</span>
   </div>
 </div>
 
+<div class="nav-tabs">
+  <button class="nav-btn active" id="btn-tab-matrix" onclick="switchNav('tab-matrix')">01 // Pin Mapping Matrix</button>
+  <button class="nav-btn" id="btn-tab-programming" onclick="switchNav('tab-programming')">02 // Target Programming</button>
+  <button class="nav-btn" id="btn-tab-console" onclick="switchNav('tab-console')">03 // Target Console (UART0)</button>
+</div>
+
 <!-- ========================================================================= -->
-<!-- TAB 2: UART PROGRAMMING -->
+<!-- TAB 1: PIN MAPPING & SYSTEM MATRIX (HOME) -->
 <!-- ========================================================================= -->
-<div class="tab-content layout-2col" id="tab-flasher">
+<div class="tab-pane col-1 active" id="tab-matrix">
   <div class="panel">
-    <div class="panel-title">
-      <span>Target Flashing Engine</span>
-      <span id="target-state" style="color:var(--emerald);">READY</span>
+    <div class="panel-header">
+      <span>[SYS_NODE // J3_CONNECTOR_MATRIX (2x12 ROW / 3.3V LVCMOS)]</span>
+      <span style="color:var(--green);">POD #1: CMSIS-DAP + DUAL SERIAL</span>
     </div>
 
-    <div class="form-group">
-      <label>Programmer Engine</label>
+    <!-- Interactive 2x12 Physical Header J3 Layout -->
+    <div class="matrix-container">
+      <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); margin-bottom:2px;">
+        ▲ ROW 1 (ODD PINS: 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23)
+      </div>
+      <div class="matrix-row">
+        <div class="pin-node pin-gnd"><span class="pin-num">P1</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P3</span><span class="pin-sig">SWCLK</span><span class="pin-fpga">P16</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P5</span><span class="pin-sig">nRST</span><span class="pin-fpga">T14</span></div>
+        <div class="pin-node pin-uart"><span class="pin-num">P7</span><span class="pin-sig">UART0_TX</span><span class="pin-fpga">C20</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P9</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-uart"><span class="pin-num">P11</span><span class="pin-sig">UART1_TX</span><span class="pin-fpga">P14</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P13</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P15</span><span class="pin-sig">IO0 / ESP</span><span class="pin-fpga">T15</span></div>
+        <div class="pin-node"><span class="pin-num">P17</span><span class="pin-sig">IO1</span><span class="pin-fpga">T17</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P19</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P21</span><span class="pin-sig">IO3</span><span class="pin-fpga">M14</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P23</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+      </div>
+
+      <div class="matrix-row" style="margin-top:4px;">
+        <div class="pin-node pin-gnd"><span class="pin-num">P2</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P4</span><span class="pin-sig">SWDIO</span><span class="pin-fpga">P15</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P6</span><span class="pin-sig">BOOT0/SWO</span><span class="pin-fpga">T10</span></div>
+        <div class="pin-node pin-uart"><span class="pin-num">P8</span><span class="pin-sig">UART0_RX</span><span class="pin-fpga">B20</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P10</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-uart"><span class="pin-num">P12</span><span class="pin-sig">UART1_RX</span><span class="pin-fpga">R14</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P14</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-pwr"><span class="pin-num">P16</span><span class="pin-sig">+3.3V</span><span class="pin-fpga">VCC</span></div>
+        <div class="pin-node"><span class="pin-num">P18</span><span class="pin-sig">IO2</span><span class="pin-fpga">R18</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P20</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P22</span><span class="pin-sig">IO4</span><span class="pin-fpga">M15</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P24</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+      </div>
+      <div style="font-size:9.5px; font-family:var(--font-mono); color:var(--text-muted); margin-top:2px;">
+        ▼ ROW 2 (EVEN PINS: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24)
+      </div>
+    </div>
+
+    <!-- Header J4 Matrix (ST-LINK/V2 Target Pod #2) -->
+    <div class="panel-header" style="margin-top:6px;">
+      <span>[SYS_NODE // J4_CONNECTOR_MATRIX (2x12 ROW / 3.3V LVCMOS)]</span>
+      <span style="color:var(--amber);">POD #2: ST-LINK/V2 + AUXILIARY BUS</span>
+    </div>
+    <div class="matrix-container">
+      <div class="matrix-row">
+        <div class="pin-node pin-gnd"><span class="pin-num">P1</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P3</span><span class="pin-sig">SWCLK1</span><span class="pin-fpga">V18</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P5</span><span class="pin-sig">nRST1</span><span class="pin-fpga">Y16</span></div>
+        <div class="pin-node"><span class="pin-num">P7</span><span class="pin-sig">IO8</span><span class="pin-fpga">E17</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P9</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P11</span><span class="pin-sig">W14</span><span class="pin-fpga">W14</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P13</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P15</span><span class="pin-sig">Y17</span><span class="pin-fpga">Y17</span></div>
+        <div class="pin-node"><span class="pin-num">P17</span><span class="pin-sig">B19</span><span class="pin-fpga">B19</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P19</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P21</span><span class="pin-sig">K16</span><span class="pin-fpga">K16</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P23</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+      </div>
+      <div class="matrix-row" style="margin-top:4px;">
+        <div class="pin-node pin-gnd"><span class="pin-num">P2</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P4</span><span class="pin-sig">SWDIO1</span><span class="pin-fpga">V17</span></div>
+        <div class="pin-node pin-swd"><span class="pin-num">P6</span><span class="pin-sig">SWO1</span><span class="pin-fpga">T16</span></div>
+        <div class="pin-node"><span class="pin-num">P8</span><span class="pin-sig">IO9</span><span class="pin-fpga">D18</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P10</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P12</span><span class="pin-sig">Y14</span><span class="pin-fpga">Y14</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P14</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node pin-pwr"><span class="pin-num">P16</span><span class="pin-sig">+3.3V</span><span class="pin-fpga">VCC</span></div>
+        <div class="pin-node"><span class="pin-num">P18</span><span class="pin-sig">B20</span><span class="pin-fpga">B20</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P20</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+        <div class="pin-node"><span class="pin-num">P22</span><span class="pin-sig">J16</span><span class="pin-fpga">J16</span></div>
+        <div class="pin-node pin-gnd"><span class="pin-num">P24</span><span class="pin-sig">GND</span><span class="pin-fpga">--</span></div>
+      </div>
+    </div>
+
+    <!-- Live Telemetry Table -->
+    <div class="panel-header" style="margin-top:6px;">
+      <span>[DYNAMIC_LINE_TELEMETRY // LIVE_PIN_STATES]</span>
+      <button class="btn" style="padding:2px 8px; font-size:10px;" onclick="loadPins()">Refresh Logic</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Signal Key</th>
+          <th>Header &amp; Pin</th>
+          <th>FPGA Ball</th>
+          <th>Role / Subsystem</th>
+          <th>Direction</th>
+          <th>Logic State</th>
+          <th>Hardware Pulse</th>
+        </tr>
+      </thead>
+      <tbody id="pins-table-body">
+        <tr><td colspan="7" style="color:var(--text-muted);">Polling hardware lines...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- TAB 2: TARGET PROGRAMMING & HARDWARE CONTROL -->
+<!-- ========================================================================= -->
+<div class="tab-pane col-2" id="tab-programming">
+  <div class="panel">
+    <div class="panel-header">
+      <span>[PROGRAMMER_ENGINE // TARGET_FLASH]</span>
+      <span id="target-state" style="color:var(--green);">STANDBY</span>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:4px;">
+      <label>Target Execution Engine</label>
       <select id="engine-select" onchange="onEngineChange()">
         <option value="stm32_uart">STM32 UART Bootloader (stm32flash · Auto BOOT0/nRST)</option>
         <option value="esp32_uart">ESP32 / ESP8266 (esptool · Auto IO0/EN Handshake)</option>
@@ -550,18 +642,18 @@ ENTERPRISE_DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
       <input type="file" id="file-input" style="display:none;" onchange="onFileSelected(this.files[0])" accept=".hex,.bin,.elf">
       <div id="drop-text">
-        <div style="font-weight:700; margin-bottom:4px;">Drag &amp; Drop Firmware File (.hex, .bin, .elf)</div>
-        <div style="color:var(--text-muted); font-size:11px;">Or click to browse from local filesystem</div>
+        <div style="font-weight:700; margin-bottom:2px; font-family:var(--font-mono); color:#fff;">SELECT OR DROP FIRMWARE IMAGE</div>
+        <div style="color:var(--text-muted); font-size:10.5px;">Supported formats: .HEX, .BIN, .ELF</div>
       </div>
-      <div id="file-info" style="display:none; text-align:left; font-size:11.5px; line-height:1.4;"></div>
+      <div id="file-info" style="display:none; text-align:left; font-size:11px; font-family:var(--font-mono);"></div>
     </div>
 
     <div class="btn-group">
-      <div class="form-group">
-        <label>Base Address</label>
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <label>Base Flash Address</label>
         <input type="text" id="base-addr" value="0x08000000">
       </div>
-      <div class="form-group">
+      <div style="display:flex; flex-direction:column; gap:4px;">
         <label>Baud Rate</label>
         <select id="baud-rate">
           <option value="9600">9,600 baud</option>
@@ -577,68 +669,68 @@ ENTERPRISE_DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <div style="display:flex; justify-content:space-between; align-items:center; padding:2px 0;">
-      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
         <input type="checkbox" id="chk-verify" checked> Verify Flash After Write
       </label>
-      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-        <input type="checkbox" id="chk-reset" checked> Auto-Reset Target After Complete
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+        <input type="checkbox" id="chk-reset" checked> Auto-Reset Target
       </label>
     </div>
 
-    <button class="btn btn-emerald" style="padding:10px;" onclick="triggerFlash()">
-      ▶ FLASH FIRMWARE TO TARGET
+    <button class="btn btn-green" style="padding:10px;" onclick="triggerFlash()">
+      ▶ FLASH FIRMWARE IMAGE
     </button>
+
+    <div class="panel-header" style="margin-top:6px;">
+      <span>[HARDWARE_ACTIONS // BUS_CONTROLS]</span>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-red" onclick="actionReset()">Pulse nRST (50ms)</button>
+      <button class="btn btn-amber" onclick="actionBootloader()">Enter STM32 Bootloader</button>
+      <button class="btn" onclick="actionNormalRun()">Normal Run (BOOT0=0)</button>
+      <button class="btn" onclick="actionEspBootloader()">ESP32 Handshake (IO0+EN)</button>
+    </div>
   </div>
 
   <div class="panel">
-    <div class="panel-title">
-      <span>Execution Output &amp; Telemetry</span>
+    <div class="panel-header">
+      <span>[EXECUTION_LOG // REAL_TIME_STREAM]</span>
       <div style="display:flex; gap:6px;">
-        <button class="btn btn-dark" style="padding:2px 6px; font-size:10px;" onclick="copyLog()">Copy Log</button>
-        <button class="btn btn-dark" style="padding:2px 6px; font-size:10px;" onclick="clearLog()">Clear</button>
+        <button class="btn" style="padding:2px 6px; font-size:10px;" onclick="copyLog()">Copy Log</button>
+        <button class="btn" style="padding:2px 6px; font-size:10px;" onclick="clearLog()">Clear</button>
       </div>
     </div>
-    <div class="terminal" id="terminal" style="height:380px;"></div>
+    <div class="terminal" id="terminal" style="height:420px;"></div>
   </div>
 </div>
 
 <!-- ========================================================================= -->
-<!-- TAB 3: PIN TELEMETRY & HARDWARE -->
+<!-- TAB 3: TARGET SERIAL CONSOLE -->
 <!-- ========================================================================= -->
-<div class="tab-content layout-1col" id="tab-pins">
+<div class="tab-pane col-1" id="tab-console">
   <div class="panel">
-    <div class="panel-title">
-      <span>Header J3 / J4 Pin Telemetry &amp; Dynamic State</span>
-      <button class="btn btn-dark" style="padding:2px 8px; font-size:10px;" onclick="loadPins()">Refresh Values</button>
+    <div class="panel-header">
+      <span>[TARGET_SERIAL_STREAM // UART0 (J3 PINS 7/8 · 115200 8N1)]</span>
+      <span class="tag tag-green">ACTIVE (COM9)</span>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Signal Key</th>
-          <th>Header &amp; Pin</th>
-          <th>FPGA Ball</th>
-          <th>Role / Alias</th>
-          <th>Direction</th>
-          <th>Logic State</th>
-          <th>Hardware Action</th>
-        </tr>
-      </thead>
-      <tbody id="pins-table-body">
-        <tr><td colspan="7" style="color:var(--text-muted);">Loading pin telemetry...</td></tr>
-      </tbody>
-    </table>
+    <div class="terminal" id="dash-serial-terminal" style="height:360px;"></div>
+    <div class="serial-box">
+      <input type="text" class="serial-input" id="dash-serial-input" placeholder="Type target CLI command &amp; press Enter..." onkeydown="if(event.key==='Enter')sendSerial('dash-serial-input')">
+      <button class="btn btn-green" onclick="sendSerial('dash-serial-input')">Transmit</button>
+      <button class="btn" onclick="document.getElementById('dash-serial-terminal').textContent=''">Clear Screen</button>
+    </div>
   </div>
 </div>
 
 <script>
 let currentFile = null;
 
-function switchTab(tabId) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+function switchNav(tabId) {
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
   document.getElementById(tabId).classList.add('active');
   document.getElementById('btn-' + tabId).classList.add('active');
-  if (tabId === 'tab-pins') {
+  if (tabId === 'tab-matrix') {
     loadPins();
   }
 }
@@ -659,10 +751,10 @@ function onFileSelected(file) {
   document.getElementById('drop-text').style.display = 'none';
   const info = document.getElementById('file-info');
   info.style.display = 'block';
-  info.innerHTML = `<strong>Selected:</strong> ${file.name}<br>` +
-                   `<strong>Size:</strong> ${(file.size / 1024).toFixed(2)} KB (${file.size} bytes)<br>` +
-                   `<span style="color:var(--emerald);">✓ Ready for flashing</span>`;
-  appendLog(`[HOST] Staged file: ${file.name} (${file.size} bytes)`);
+  info.innerHTML = `<strong>FILE:</strong> ${file.name}<br>` +
+                   `<strong>SIZE:</strong> ${(file.size / 1024).toFixed(2)} KB (${file.size} bytes)<br>` +
+                   `<span style="color:var(--green);">[STAGED AND READY FOR EXECUTION]</span>`;
+  appendLog(`[HOST] Staged: ${file.name} (${file.size} B)`);
 }
 
 const dz = document.getElementById('dropzone');
@@ -690,11 +782,11 @@ function copyLog() {
 
 async function triggerFlash() {
   if (!currentFile) {
-    alert("Please select or drop a firmware file (.hex, .bin, .elf) first.");
+    alert("Select or drop a firmware image (.hex, .bin, .elf) first.");
     return;
   }
 
-  appendLog(`[UPLOAD] Transmitting ${currentFile.name} to programmer pod...`);
+  appendLog(`[UPLOAD] Uploading ${currentFile.name}...`);
   const formData = new FormData();
   formData.append('file', currentFile);
 
@@ -716,7 +808,7 @@ async function triggerFlash() {
       reset_after: document.getElementById('chk-reset').checked
     };
 
-    appendLog(`[FLASH] Spawning ${payload.engine} engine...`);
+    appendLog(`[EXEC] Initializing ${payload.engine} flasher...`);
     const flashRes = await fetch('/api/flash', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -724,7 +816,7 @@ async function triggerFlash() {
     });
     const flashData = await flashRes.json();
     if (flashData.error) {
-      appendLog(`[-] Flashing trigger failed: ${flashData.error}`);
+      appendLog(`[-] Trigger error: ${flashData.error}`);
     }
   } catch (err) {
     appendLog(`[-] Network error: ${err}`);
@@ -737,12 +829,12 @@ async function actionReset() {
 }
 
 async function actionBootloader() {
-  appendLog("[TARGET] Asserting BOOT0=1 and pulsing nRST (Entering Bootloader)...");
+  appendLog("[TARGET] Asserting BOOT0=1 and pulsing nRST (Bootloader mode)...");
   await fetch('/api/programmer/bootloader', { method: 'POST' });
 }
 
 async function actionNormalRun() {
-  appendLog("[TARGET] Deasserting BOOT0=0 and pulsing nRST (Normal Run)...");
+  appendLog("[TARGET] Deasserting BOOT0=0 and pulsing nRST (Normal run)...");
   await fetch('/api/esp32/reset', { method: 'POST' });
 }
 
@@ -759,7 +851,7 @@ async function loadPins() {
     tbody.innerHTML = '';
     for (const [k, p] of Object.entries(pins)) {
       const valStr = p.current_val === 1 
-        ? '<span style="color:var(--emerald);">● HIGH (1)</span>' 
+        ? '<span style="color:var(--green);">● HIGH (1)</span>' 
         : '<span style="color:var(--text-muted);">○ LOW (0)</span>';
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -770,7 +862,7 @@ async function loadPins() {
         <td>${p.direction.toUpperCase()}</td>
         <td>${valStr}</td>
         <td>
-          <button class="btn btn-dark" style="padding:2px 6px; font-size:10px;" onclick="pulsePin('${k}', 50)">Pulse 50ms</button>
+          <button class="btn" style="padding:2px 6px; font-size:10px;" onclick="pulsePin('${k}', 50)">Pulse 50ms</button>
         </td>
       `;
       tbody.appendChild(tr);
@@ -825,7 +917,7 @@ window.onload = function() {
   initLogStream();
   initSerialStream();
   loadPins();
-  appendLog("[SYSTEM] Plink Programmer & Debug Pod online (192.168.2.99)");
+  appendLog("[SYS] Plink Hardware Pod online (192.168.2.99)");
 };
 </script>
 

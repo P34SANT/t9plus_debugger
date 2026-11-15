@@ -151,6 +151,13 @@ class AxiUartLiteBridgeServer:
 
     def open_mmap(self):
         try:
+            # Protection: never touch PL AXI memory if FPGA is not operating
+            if os.path.exists("/sys/class/fpga_manager/fpga0/state"):
+                with open("/sys/class/fpga_manager/fpga0/state", "r") as f:
+                    if f.read().strip() != "operating":
+                        logger.warning("FPGA PL not in operating state. AXI UART1 disabled safely.")
+                        return False
+
             self.fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
             self.mem = mmap.mmap(
                 self.fd, 4096,
