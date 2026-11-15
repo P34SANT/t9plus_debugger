@@ -28,8 +28,10 @@ sudo cp t9_programmer_pcap.bin "$INSTALL_DIR/bitstream/"
 sudo cp t9_programmer.bit "$INSTALL_DIR/bitstream/"
 sudo cp t9_programmer.hwh "$INSTALL_DIR/bitstream/"
 
+sudo rm -f "$INSTALL_DIR/usbip_dap/dap.c" "$INSTALL_DIR/usbip_dap/dap_config.h" "$INSTALL_DIR/usbip_dap/dap.h"
 sudo cp -r t9_programmer/usbip_dap/* "$INSTALL_DIR/usbip_dap/"
 (cd "$INSTALL_DIR/usbip_dap" && make clean && make)
+sudo rm -rf /home/xilinx/usbip_dap
 sudo ln -sfn "$INSTALL_DIR/usbip_dap" /home/xilinx/usbip_dap
 
 sudo cp t9_programmer/openocd/* "$INSTALL_DIR/openocd/"

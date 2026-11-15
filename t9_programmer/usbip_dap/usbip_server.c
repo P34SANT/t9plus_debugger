@@ -21,12 +21,13 @@
 #include <sys/mman.h>
 
 #include "usbip_proto.h"
-#include "dap_config.h"
-#include "dap.h"
+#include "DAP_config.h"
+#include "DAP.h"
 
 #define TCP_SERV_PORT 3240
 #define DAP_MAX_PACKET 512
 
+#define DEBUG_VERBOSE 0
 #ifdef DEBUG_VERBOSE
 #define LOG_DAP(...) printf(__VA_ARGS__)
 #else
@@ -42,16 +43,16 @@ static const USB_DEVICE_DESCRIPTOR dev_dsc = {
     .bLength            = sizeof(USB_DEVICE_DESCRIPTOR),
     .bDescriptorType    = USB_DESCRIPTOR_DEVICE,
     .bcdUSB             = 0x0210, // USB 2.10 (BOS supported)
-    .bDeviceClass       = 0x00,
-    .bDeviceSubClass    = 0x00,
-    .bDeviceProtocol    = 0x00,
+    .bDeviceClass       = 0xEF,   // Miscellaneous Device Class (Composite IAD)
+    .bDeviceSubClass    = 0x02,   // Common Class
+    .bDeviceProtocol    = 0x01,   // Interface Association Descriptor
     .bMaxPacketSize0    = 64,
     .idVendor           = 0x0D28, // ARM Ltd.
     .idProduct          = 0x0204, // CMSIS-DAP
     .bcdDevice          = 0x0100,
-    .iManufacturer      = 0x01,
-    .iProduct           = 0x02,
-    .iSerialNumber      = 0x03,
+    .iManufacturer      = 0x01,   // "Plink"
+    .iProduct           = 0x02,   // "Plink Probe & Serial Port"
+    .iSerialNumber      = 0x03,   // "0204000100000002"
     .bNumConfigurations = 0x01
 };
 
@@ -59,26 +60,27 @@ static const USB_DEVICE_QUALIFIER_DESCRIPTOR dev_qua = {
     .bLength            = sizeof(USB_DEVICE_QUALIFIER_DESCRIPTOR),
     .bType              = USB_DESCRIPTOR_DEVICE_QUALIFIER,
     .bcdUSB             = 0x0210,
-    .bDeviceClass       = 0x00,
-    .bDeviceSubClass    = 0x00,
-    .bDeviceProtocol    = 0x00,
+    .bDeviceClass       = 0xEF,
+    .bDeviceSubClass    = 0x02,
+    .bDeviceProtocol    = 0x01,
     .bMaxPacketSize0    = 64,
     .bNumConfigurations = 1,
     .bReserved          = 0
 };
 
-static const CONFIG_CMSIS_DAP_V2 cfg_dap = {
-    .dev_conf0 = {
+static const CONFIG_PLINK_COMPOSITE cfg_plink = {
+    .config = {
         .bLength             = sizeof(USB_CONFIGURATION_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_CONFIGURATION,
-        .wTotalLength        = sizeof(CONFIG_CMSIS_DAP_V2),
-        .bNumInterfaces      = 1,
+        .wTotalLength        = sizeof(CONFIG_PLINK_COMPOSITE),
+        .bNumInterfaces      = 3,
         .bConfigurationValue = 1,
         .iConfiguration      = 0,
         .bmAttributes        = 0x80, // Bus Powered
         .bMaxPower           = 250   // 500 mA
     },
-    .dev_int0 = {
+    // Interface 0: WinUSB / CMSIS-DAP v2
+    .intf_dap = {
         .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
         .bInterfaceNumber    = 0,
@@ -87,9 +89,9 @@ static const CONFIG_CMSIS_DAP_V2 cfg_dap = {
         .bInterfaceClass     = 0xFF, // Vendor Specific (WinUSB)
         .bInterfaceSubClass  = 0x00,
         .bInterfaceProtocol  = 0x00,
-        .iInterface          = 0
+        .iInterface          = 4     // "Plink CMSIS-DAP v2"
     },
-    .ep_out = {
+    .ep_dap_out = {
         .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
         .bEndpointAddress    = 0x01, // EP1 OUT
@@ -97,10 +99,95 @@ static const CONFIG_CMSIS_DAP_V2 cfg_dap = {
         .wMaxPacketSize      = 512,
         .bInterval           = 0
     },
-    .ep_in = {
+    .ep_dap_in = {
         .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
         .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
         .bEndpointAddress    = 0x81, // EP1 IN
+        .bmAttributes        = 0x02, // Bulk
+        .wMaxPacketSize      = 512,
+        .bInterval           = 0
+    },
+    // Interface Association Descriptor (IAD) for CDC-ACM
+    .iad_cdc = {
+        .bLength             = sizeof(USB_IAD_DESCRIPTOR),
+        .bDescriptorType     = 0x0B, // IAD
+        .bFirstInterface     = 1,
+        .bInterfaceCount     = 2,
+        .bFunctionClass      = 0x02, // CDC
+        .bFunctionSubClass   = 0x02, // ACM
+        .bFunctionProtocol   = 0x01, // AT commands
+        .iFunction           = 5     // "Plink Serial Port"
+    },
+    // Interface 1: CDC-ACM Comm
+    .intf_cdc_comm = {
+        .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
+        .bInterfaceNumber    = 1,
+        .bAlternateSetting   = 0,
+        .bNumEndpoints       = 1,
+        .bInterfaceClass     = 0x02, // CDC Control
+        .bInterfaceSubClass  = 0x02, // ACM
+        .bInterfaceProtocol  = 0x01, // AT commands
+        .iInterface          = 5
+    },
+    .cdc_header = {
+        .bLength             = sizeof(USB_CDC_HEADER_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x00, // Header
+        .bcdCDC              = 0x0110
+    },
+    .cdc_call_mgmt = {
+        .bLength             = sizeof(USB_CDC_CALL_MGMT_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x01, // Call Management
+        .bmCapabilities      = 0x00,
+        .bDataInterface      = 2
+    },
+    .cdc_acm = {
+        .bLength             = sizeof(USB_CDC_ACM_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x02, // ACM
+        .bmCapabilities      = 0x02  // Line Coding & Serial State
+    },
+    .cdc_union = {
+        .bLength             = sizeof(USB_CDC_UNION_DESCRIPTOR),
+        .bDescriptorType     = 0x24,
+        .bDescriptorSubtype  = 0x06, // Union
+        .bControlInterface   = 1,
+        .bSubordinateInterface0 = 2
+    },
+    .ep_cdc_notify = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x82, // EP2 IN
+        .bmAttributes        = 0x03, // Interrupt
+        .wMaxPacketSize      = 10,
+        .bInterval           = 16
+    },
+    // Interface 2: CDC-ACM Data
+    .intf_cdc_data = {
+        .bLength             = sizeof(USB_INTERFACE_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_INTERFACE,
+        .bInterfaceNumber    = 2,
+        .bAlternateSetting   = 0,
+        .bNumEndpoints       = 2,
+        .bInterfaceClass     = 0x0A, // CDC Data
+        .bInterfaceSubClass  = 0x00,
+        .bInterfaceProtocol  = 0x00,
+        .iInterface          = 0
+    },
+    .ep_cdc_out = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x03, // EP3 OUT
+        .bmAttributes        = 0x02, // Bulk
+        .wMaxPacketSize      = 512,
+        .bInterval           = 0
+    },
+    .ep_cdc_in = {
+        .bLength             = sizeof(USB_ENDPOINT_DESCRIPTOR),
+        .bDescriptorType     = USB_DESCRIPTOR_ENDPOINT,
+        .bEndpointAddress    = 0x83, // EP3 IN
         .bmAttributes        = 0x02, // Bulk
         .wMaxPacketSize      = 512,
         .bInterval           = 0
@@ -123,26 +210,40 @@ static const uint8_t desc_bos[33] = {
     0xDF, 0x60, 0xDD, 0xD8, 0x89, 0x45, 0xC7, 0x4C,
     0x9C, 0xD2, 0x65, 0x9D, 0x9E, 0x64, 0x8A, 0x9F,
     0x00, 0x00, 0x03, 0x06,             // Windows version: Windows 8.1+ (0x06030000)
-    0xA2, 0x00,                         // wMSOSDescriptorSetTotalLength (162)
+    0xB2, 0x00,                         // wMSOSDescriptorSetTotalLength (178)
     0x01,                               // bMS_VendorCode
     0x00                                // bAltEnumCode
 };
 
-// Microsoft OS 2.0 Descriptor Set (162 bytes)
-static const uint8_t ms_os_20_desc[162] = {
+// Microsoft OS 2.0 Descriptor Set (178 bytes) - Scoped to Interface 0 for WinUSB
+static const uint8_t ms_os_20_desc[178] = {
     // Microsoft OS 2.0 Descriptor Set Header (10 bytes)
     0x0A, 0x00,                         // wLength
     0x00, 0x00,                         // MS_OS_20_SET_HEADER_DESCRIPTOR
     0x00, 0x00, 0x03, 0x06,             // dwWindowsVersion: Windows 8.1+
-    0xA2, 0x00,                         // wTotalLength (162)
+    0xB2, 0x00,                         // wTotalLength (178)
 
-    // Microsoft OS 2.0 Compatible ID Descriptor (20 bytes)
+    // Configuration Subset Header (8 bytes)
+    0x08, 0x00,                         // wLength
+    0x01, 0x00,                         // MS_OS_20_SUBSET_HEADER_CONFIGURATION
+    0x00,                               // bConfigurationValue
+    0x00,                               // bReserved
+    0xA8, 0x00,                         // wTotalLength (168)
+
+    // Function Subset Header (8 bytes) - scopes WinUSB only to Interface 0 (CMSIS-DAP)
+    0x08, 0x00,                         // wLength
+    0x02, 0x00,                         // MS_OS_20_SUBSET_HEADER_FUNCTION
+    0x00,                               // bFirstInterfaceNumber (0)
+    0x00,                               // bReserved
+    0xA0, 0x00,                         // wSubsetLength (160)
+
+    // Compatible ID Descriptor (20 bytes)
     0x14, 0x00,                         // wLength
     0x03, 0x00,                         // MS_OS_20_FEATURE_COMPATIBLE_ID
     'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00, // CompatibleID ("WINUSB")
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // SubCompatibleID
 
-    // Microsoft OS 2.0 Registry Property Descriptor (132 bytes)
+    // Registry Property Descriptor (132 bytes)
     0x84, 0x00,                         // wLength
     0x04, 0x00,                         // MS_OS_20_FEATURE_REG_PROPERTY
     0x07, 0x00,                         // wPropertyDataType (REG_MULTI_SZ)
@@ -160,9 +261,11 @@ static const uint8_t ms_os_20_desc[162] = {
 };
 
 static const char *strings[] = {
-    "ARM",
-    "CMSIS-DAP",
-    "0204000100000000"
+    "Plink",
+    "Plink Probe & Serial Port",
+    "0204000100000002",
+    "Plink CMSIS-DAP v2",
+    "Plink Virtual COM Port"
 };
 
 // Helper network I/O
@@ -218,9 +321,9 @@ static bool handle_get_descriptor(int fd, USBIP_CMD_SUBMIT *cmd, setup_pkt_t *se
         return send_ret_submit(fd, cmd, 0, &dev_dsc, len);
     }
     case USB_DESCRIPTOR_CONFIGURATION: {
-        uint32_t len = sizeof(cfg_dap);
+        uint32_t len = sizeof(cfg_plink);
         if (req_len < len) len = req_len;
-        return send_ret_submit(fd, cmd, 0, &cfg_dap, len);
+        return send_ret_submit(fd, cmd, 0, &cfg_plink, len);
     }
     case USB_DESCRIPTOR_DEVICE_QUALIFIER: {
         uint32_t len = sizeof(dev_qua);
@@ -238,7 +341,17 @@ static bool handle_get_descriptor(int fd, USBIP_CMD_SUBMIT *cmd, setup_pkt_t *se
             uint32_t len = (req_len < 4) ? req_len : 4;
             return send_ret_submit(fd, cmd, 0, lang, len);
         }
-        if (desc_idx >= 1 && desc_idx <= 3) {
+        if (desc_idx == 0xEE) {
+            // Microsoft OS 1.0 String Descriptor: "MSFT100" with Vendor Code 0x02
+            static const uint8_t msft100[18] = {
+                0x12, USB_DESCRIPTOR_STRING,
+                'M', 0, 'S', 0, 'F', 0, 'T', 0, '1', 0, '0', 0, '0', 0,
+                0x02, 0x00
+            };
+            uint32_t len = (req_len < sizeof(msft100)) ? req_len : sizeof(msft100);
+            return send_ret_submit(fd, cmd, 0, msft100, len);
+        }
+        if (desc_idx >= 1 && desc_idx <= (sizeof(strings) / sizeof(strings[0]))) {
             const char *str = strings[desc_idx - 1];
             size_t slen = strlen(str);
             uint8_t buf[256];
@@ -287,10 +400,11 @@ static bool pending_in_pop(USBIP_CMD_SUBMIT *out_cmd) {
     return true;
 }
 
-static bool pending_in_unlink(uint32_t seqnum) {
+static bool pending_in_unlink(uint32_t seqnum, USBIP_CMD_SUBMIT *out_cmd) {
     for (int i = 0; i < pending_in_count; i++) {
         int idx = (pending_in_head + i) % MAX_PENDING_IN;
         if (pending_in_queue[idx].seqnum == seqnum) {
+            if (out_cmd) *out_cmd = pending_in_queue[idx];
             for (int j = i; j < pending_in_count - 1; j++) {
                 int cur = (pending_in_head + j) % MAX_PENDING_IN;
                 int nxt = (pending_in_head + j + 1) % MAX_PENDING_IN;
@@ -303,6 +417,20 @@ static bool pending_in_unlink(uint32_t seqnum) {
     }
     return false;
 }
+
+typedef struct __attribute__ ((__packed__)) {
+    uint32_t dwDTERate;
+    uint8_t  bCharFormat;
+    uint8_t  bParityType;
+    uint8_t  bDataBits;
+} CDC_LINE_CODING;
+
+static CDC_LINE_CODING cdc_line_coding = {
+    .dwDTERate   = 115200,
+    .bCharFormat = 0, // 1 stop bit
+    .bParityType = 0, // None
+    .bDataBits   = 8  // 8 bits
+};
 
 static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd) {
     setup_pkt_t *setup = (setup_pkt_t *)cmd->setup;
@@ -339,12 +467,58 @@ static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd) {
         if (setup->bRequest == 0x01) { // CLEAR_FEATURE (ENDPOINT_HALT)
             return send_ret_submit(fd, cmd, 0, NULL, 0);
         }
-    } else if (setup->bmRequestType == 0xC0) {
-        // Vendor Device-to-Host Request: Microsoft OS 2.0 Descriptor Set
+    } else if (setup->bmRequestType == 0x21) { // Host-to-Device Class Interface (CDC)
+        if (setup->bRequest == 0x20) { // SET_LINE_CODING
+            uint32_t len = setup->wLength;
+            if (len > sizeof(cdc_line_coding)) len = sizeof(cdc_line_coding);
+            recv_all(fd, &cdc_line_coding, len);
+            return send_ret_submit(fd, cmd, 0, NULL, len);
+        } else if (setup->bRequest == 0x22) { // SET_CONTROL_LINE_STATE
+            return send_ret_submit(fd, cmd, 0, NULL, 0);
+        }
+    } else if (setup->bmRequestType == 0xA1) { // Device-to-Host Class Interface (CDC)
+        if (setup->bRequest == 0x21) { // GET_LINE_CODING
+            uint32_t len = setup->wLength;
+            if (len > sizeof(cdc_line_coding)) len = sizeof(cdc_line_coding);
+            return send_ret_submit(fd, cmd, 0, &cdc_line_coding, len);
+        }
+    } else if (setup->bmRequestType == 0xC0 || setup->bmRequestType == 0xC1) {
+        // Vendor Device-to-Host Request: Microsoft OS 2.0 or OS 1.0
         if (setup->bRequest == 0x01) {
+            // MS OS 2.0 Descriptor Set (Windows 8.1, 10, 11)
             uint32_t len = sizeof(ms_os_20_desc);
             if (setup->wLength < len) len = setup->wLength;
             return send_ret_submit(fd, cmd, 0, ms_os_20_desc, len);
+        } else if (setup->bRequest == 0x02) {
+            // MS OS 1.0 Feature Descriptors (Windows 7)
+            if (setup->wIndex.W == 0x0004) {
+                // Extended Compatible ID (40 bytes)
+                static const uint8_t ms_os_10_compat_id[40] = {
+                    0x28, 0x00, 0x00, 0x00, 0x00, 0x01, 0x04, 0x00, 0x01, 0,0,0,0,0,0,0,
+                    0x00, 0x01, 'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00,
+                    0,0,0,0,0,0,0,0, 0,0,0,0,0,0
+                };
+                uint32_t len = sizeof(ms_os_10_compat_id);
+                if (setup->wLength < len) len = setup->wLength;
+                return send_ret_submit(fd, cmd, 0, ms_os_10_compat_id, len);
+            } else if (setup->wIndex.W == 0x0005) {
+                // Extended Properties - DeviceInterfaceGUID for WinUSB
+                static const uint8_t ms_os_10_ext_prop[142] = {
+                    0x8E, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05, 0x00, 0x01, 0x00,
+                    0x84, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x28, 0x00,
+                    'D',0,'e',0,'v',0,'i',0,'c',0,'e',0,'I',0,'n',0,'t',0,'e',0,'r',0,'f',0,'a',0,'c',0,'e',0,'G',0,'U',0,'I',0,'D',0,0,0,
+                    0x4E, 0x00, 0x00, 0x00,
+                    '{',0,'C',0,'D',0,'B',0,'3',0,'B',0,'5',0,'A',0,'D',0,'-',0,
+                    '2',0,'9',0,'3',0,'B',0,'-',0,
+                    '4',0,'6',0,'6',0,'3',0,'-',0,
+                    'A',0,'A',0,'3',0,'6',0,'-',0,
+                    '1',0,'A',0,'A',0,'E',0,'4',0,'6',0,'4',0,'6',0,'3',0,'7',0,'7',0,'6',0,'}',0,
+                    0,0
+                };
+                uint32_t len = sizeof(ms_os_10_ext_prop);
+                if (setup->wLength < len) len = setup->wLength;
+                return send_ret_submit(fd, cmd, 0, ms_os_10_ext_prop, len);
+            }
         }
     }
 
@@ -362,6 +536,8 @@ static void handle_client(int client_fd) {
     bool has_dap_resp = false;
 
     pending_in_init();
+
+    int uart_fd = -1;
 
     while (1) {
         if (!attached) {
@@ -382,7 +558,7 @@ static void handle_client(int client_fd) {
 
                 OP_REP_DEVLIST_DEVICE dev;
                 memset(&dev, 0, sizeof(dev));
-                snprintf(dev.usbPath, sizeof(dev.usbPath), "/sys/devices/platform/t9-dap/1-1");
+                snprintf(dev.usbPath, sizeof(dev.usbPath), "/sys/devices/platform/pcmsis/1-1");
                 snprintf(dev.busID, sizeof(dev.busID), "1-1");
                 dev.busnum = htonl(1);
                 dev.devnum = htonl(2);
@@ -395,17 +571,30 @@ static void handle_client(int client_fd) {
                 dev.bDeviceProtocol = dev_dsc.bDeviceProtocol;
                 dev.bConfigurationValue = 1;
                 dev.bNumConfigurations = 1;
-                dev.bNumInterfaces = 1;
+                dev.bNumInterfaces = 3;
 
-                OP_REP_DEVLIST_INTERFACE intf;
-                intf.bInterfaceClass    = cfg_dap.dev_int0.bInterfaceClass;
-                intf.bInterfaceSubClass = cfg_dap.dev_int0.bInterfaceSubClass;
-                intf.bInterfaceProtocol = cfg_dap.dev_int0.bInterfaceProtocol;
-                intf.padding = 0;
+                OP_REP_DEVLIST_INTERFACE intf[3];
+                // Interface 0: WinUSB (CMSIS-DAP)
+                intf[0].bInterfaceClass    = 0xFF;
+                intf[0].bInterfaceSubClass = 0x00;
+                intf[0].bInterfaceProtocol = 0x00;
+                intf[0].padding            = 0;
+
+                // Interface 1: CDC Comm
+                intf[1].bInterfaceClass    = 0x02;
+                intf[1].bInterfaceSubClass = 0x02;
+                intf[1].bInterfaceProtocol = 0x01;
+                intf[1].padding            = 0;
+
+                // Interface 2: CDC Data
+                intf[2].bInterfaceClass    = 0x0A;
+                intf[2].bInterfaceSubClass = 0x00;
+                intf[2].bInterfaceProtocol = 0x00;
+                intf[2].padding            = 0;
 
                 send_all(client_fd, &rep_hdr, sizeof(rep_hdr));
                 send_all(client_fd, &dev, sizeof(dev));
-                send_all(client_fd, &intf, sizeof(intf));
+                send_all(client_fd, intf, sizeof(intf));
                 break;
             } else if (command == 0x8003) { // OP_REQ_IMPORT
                 char busid[32];
@@ -416,7 +605,7 @@ static void handle_client(int client_fd) {
                 rep.version = htons(0x0111);
                 rep.command = htons(0x0003);
                 rep.status  = htonl(0);
-                snprintf(rep.usbPath, sizeof(rep.usbPath), "/sys/devices/platform/t9-dap/1-1");
+                snprintf(rep.usbPath, sizeof(rep.usbPath), "/sys/devices/platform/plink/1-1");
                 snprintf(rep.busID, sizeof(rep.busID), "1-1");
                 rep.busnum = htonl(1);
                 rep.devnum = htonl(2);
@@ -429,13 +618,26 @@ static void handle_client(int client_fd) {
                 rep.bDeviceProtocol = dev_dsc.bDeviceProtocol;
                 rep.bConfigurationValue = 1;
                 rep.bNumConfigurations = 1;
-                rep.bNumInterfaces = 1;
+                rep.bNumInterfaces = 3;
 
                 if (!send_all(client_fd, &rep, sizeof(rep))) break;
                 attached = true;
                 pending_in_init();
                 has_dap_resp = false;
-                printf("[USBIP] Device 1-1 imported. Connected to host.\n");
+
+                // Connect loopback socket to local UART0 TCP bridge (:2000)
+                uart_fd = socket(AF_INET, SOCK_STREAM, 0);
+                if (uart_fd >= 0) {
+                    int flags = fcntl(uart_fd, F_GETFL, 0);
+                    fcntl(uart_fd, F_SETFL, flags | O_NONBLOCK);
+                    struct sockaddr_in uaddr;
+                    memset(&uaddr, 0, sizeof(uaddr));
+                    uaddr.sin_family = AF_INET;
+                    uaddr.sin_port = htons(2000);
+                    uaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                    connect(uart_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
+                }
+                printf("[USBIP] Device 1-1 (Plink Composite: WinUSB + CDC-ACM) imported. Connected to host.\n");
             } else {
                 break;
             }
@@ -444,8 +646,8 @@ static void handle_client(int client_fd) {
             struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
             int pr = poll(&pfd, 1, 100);
             if (pr == 0) {
-                // Idle: no USB/IP packets received in 100ms -> turn D3 green OFF
-                zynq_d3_led_set(0);
+                // Idle: no USB/IP packets received in 100ms -> turn D3 LEDs OFF
+                dap_activity_idle();
                 continue;
             } else if (pr < 0) {
                 if (errno == EINTR) continue;
@@ -493,10 +695,21 @@ static void handle_client(int client_fd) {
                         // EP1 OUT: Receive DAP command from host
                         uint32_t rlen = cmd.transfer_buffer_length;
                         LOG_DAP("[USBIP] EP1 OUT seq=%d len=%d\n", cmd.seqnum, rlen);
-                        if (rlen > DAP_MAX_PACKET) rlen = DAP_MAX_PACKET;
-                        if (!recv_all(client_fd, dap_req_buf, rlen)) {
+                        uint32_t to_read = (rlen > DAP_MAX_PACKET) ? DAP_MAX_PACKET : rlen;
+                        if (!recv_all(client_fd, dap_req_buf, to_read)) {
                             printf("[USBIP] recv_all EP1 OUT payload failed!\n");
                             break;
+                        }
+
+                        // Drain excess bytes from TCP socket to maintain strict protocol framing
+                        if (rlen > to_read) {
+                            uint32_t excess = rlen - to_read;
+                            uint8_t dummy[256];
+                            while (excess > 0) {
+                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
+                                if (!recv_all(client_fd, dummy, chunk)) break;
+                                excess -= chunk;
+                            }
                         }
 
                         LOG_DAP("[USBIP] EP1 OUT DAP cmd=0x%02x\n", dap_req_buf[0]);
@@ -508,7 +721,7 @@ static void handle_client(int client_fd) {
                         }
 
                         // Execute CMSIS-DAP command directly on Zynq SWD pins
-                        dap_resp_len = dap_process_request(dap_req_buf, rlen, dap_resp_buf, DAP_MAX_PACKET);
+                        dap_resp_len = dap_process_request(dap_req_buf, to_read, dap_resp_buf, DAP_MAX_PACKET);
                         LOG_DAP("[USBIP] DAP cmd executed -> resp_len=%d, resp[0]=0x%02x\n",
                                 dap_resp_len, dap_resp_len > 0 ? dap_resp_buf[0] : 0);
                         has_dap_resp = true;
@@ -517,9 +730,10 @@ static void handle_client(int client_fd) {
                         if (pending_in_count > 0) {
                             USBIP_CMD_SUBMIT in_cmd;
                             pending_in_pop(&in_cmd);
+                            uint32_t tx_len = (dap_resp_len > in_cmd.transfer_buffer_length) ? in_cmd.transfer_buffer_length : dap_resp_len;
                             LOG_DAP("[USBIP] Satisfying pending IN seq=%d with len=%d (remaining pending=%d)\n",
-                                    in_cmd.seqnum, dap_resp_len, pending_in_count);
-                            if (!send_ret_submit(client_fd, &in_cmd, 0, dap_resp_buf, dap_resp_len)) {
+                                    in_cmd.seqnum, tx_len, pending_in_count);
+                            if (!send_ret_submit(client_fd, &in_cmd, 0, dap_resp_buf, tx_len)) {
                                 printf("[USBIP] send_ret_submit pending IN failed!\n");
                                 break;
                             }
@@ -532,7 +746,8 @@ static void handle_client(int client_fd) {
                         LOG_DAP("[USBIP] EP1 IN seq=%d len=%d (has_resp=%d)\n",
                                 cmd.seqnum, cmd.transfer_buffer_length, has_dap_resp);
                         if (has_dap_resp) {
-                            if (!send_ret_submit(client_fd, &cmd, 0, dap_resp_buf, dap_resp_len)) {
+                            uint32_t tx_len = (dap_resp_len > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : dap_resp_len;
+                            if (!send_ret_submit(client_fd, &cmd, 0, dap_resp_buf, tx_len)) {
                                 printf("[USBIP] send_ret_submit EP1 IN failed!\n");
                                 break;
                             }
@@ -542,9 +757,46 @@ static void handle_client(int client_fd) {
                                 printf("[USBIP] pending_in queue full! Overwriting oldest\n");
                                 USBIP_CMD_SUBMIT dropped;
                                 pending_in_pop(&dropped);
+                                send_ret_submit(client_fd, &dropped, -ECONNRESET, NULL, 0);
                                 pending_in_push(&cmd);
                             }
                         }
+                    }
+                } else if (cmd.ep == 2) {
+                    // EP2 IN: CDC Notification (Interrupt)
+                    static const uint8_t notify[10] = { 0xA1, 0x20, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00 };
+                    uint32_t tx_len = (sizeof(notify) > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : sizeof(notify);
+                    send_ret_submit(client_fd, &cmd, 0, notify, tx_len);
+                } else if (cmd.ep == 3) {
+                    // EP3: CDC Data (Bulk)
+                    if (cmd.direction == 0) { // OUT: Host writing to serial port
+                        uint32_t rlen = cmd.transfer_buffer_length;
+                        uint8_t ubuf[512];
+                        uint32_t to_read = (rlen > sizeof(ubuf)) ? sizeof(ubuf) : rlen;
+                        if (!recv_all(client_fd, ubuf, to_read)) break;
+                        if (rlen > to_read) {
+                            uint32_t excess = rlen - to_read;
+                            uint8_t dummy[256];
+                            while (excess > 0) {
+                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
+                                if (!recv_all(client_fd, dummy, chunk)) break;
+                                excess -= chunk;
+                            }
+                        }
+                        if (uart_fd >= 0) {
+                            send(uart_fd, ubuf, to_read, MSG_NOSIGNAL);
+                        }
+                        send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
+                    } else { // IN: Host reading from serial port
+                        uint8_t rx_buf[512];
+                        ssize_t n_rx = 0;
+                        if (uart_fd >= 0) {
+                            n_rx = recv(uart_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
+                            if (n_rx < 0) n_rx = 0;
+                        }
+                        uint32_t tx_len = (uint32_t)n_rx;
+                        if (tx_len > cmd.transfer_buffer_length) tx_len = cmd.transfer_buffer_length;
+                        send_ret_submit(client_fd, &cmd, 0, (tx_len > 0) ? rx_buf : NULL, tx_len);
                     }
                 } else {
                     printf("[USBIP] Unknown ep %d\n", cmd.ep);
@@ -569,12 +821,15 @@ static void handle_client(int client_fd) {
                 ret_unl.direction = 0;
                 ret_unl.ep        = 0;
 
-                if (pending_in_unlink(unl.seqnum_urb)) {
+                USBIP_CMD_SUBMIT unlinked_cmd;
+                if (pending_in_unlink(unl.seqnum_urb, &unlinked_cmd)) {
                     ret_unl.status = htonl(0);
+                    send_all(client_fd, &ret_unl, sizeof(ret_unl));
+                    send_ret_submit(client_fd, &unlinked_cmd, -ECONNRESET, NULL, 0);
                 } else {
                     ret_unl.status = htonl(-ECONNRESET);
+                    send_all(client_fd, &ret_unl, sizeof(ret_unl));
                 }
-                send_all(client_fd, &ret_unl, sizeof(ret_unl));
             } else {
                 printf("[USBIP] Unknown cmd_code: 0x%08X\n", cmd_code);
                 break;
@@ -582,8 +837,10 @@ static void handle_client(int client_fd) {
         }
     }
 
+    if (uart_fd >= 0) close(uart_fd);
     close(client_fd);
-    zynq_d3_led_set(0);
+    DAP_CONFIG_DISCONNECT();
+    dap_activity_idle();
     printf("[USBIP] Client disconnected.\n");
 }
 
@@ -593,7 +850,7 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
 
     printf("====================================================\n");
-    printf(" Antminer T9+ Universal CMSIS-DAP USB/IP Debug Server\n");
+    printf(" Antminer T9+ Plink Debug & Serial Server\n");
     printf(" SWCLK: GPIO 54 | SWDIO: GPIO 55 | nRST: GPIO 56\n");
     printf("====================================================\n");
 

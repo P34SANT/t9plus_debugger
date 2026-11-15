@@ -225,7 +225,7 @@ module axi_swd_engine #(
             target_ack    <= 3'b000;
             parity_err    <= 1'b0;
             swclk_o       <= 1'b1; // Idle clock is HIGH
-            swdio_o       <= 1'b1;
+            swdio_o       <= 1'b0; // Idle data is LOW
             swdio_t       <= 1'b0; // Driven
             phase         <= 1'b0;
             bit_idx       <= 6'd0;
@@ -238,7 +238,7 @@ module axi_swd_engine #(
             case (state)
                 ST_IDLE: begin
                     swclk_o     <= 1'b1;
-                    swdio_o     <= 1'b1;
+                    swdio_o     <= 1'b0;
                     swdio_t     <= 1'b0;
                     phase       <= 1'b0;
                     fsm_busy    <= 1'b0;
@@ -297,10 +297,10 @@ module axi_swd_engine #(
                     if (tick) begin
                         if (!phase) begin
                             swclk_o <= 1'b0;
-                            swdio_t <= 1'b1; // Tristate SWDIO (Target will drive)
+                            swdio_t <= 1'b1; // Tristate SWDIO (Host releases line)
                             phase   <= 1'b1;
                         end else begin
-                            swclk_o <= 1'b1;
+                            swclk_o <= 1'b1; // Rising edge: Target assumes control
                             phase   <= 1'b0;
                             state   <= ST_ACK;
                             bit_idx <= 6'd0;
@@ -314,29 +314,31 @@ module axi_swd_engine #(
                 ST_ACK: begin
                     if (tick) begin
                         if (!phase) begin
+                            // Clock LOW: Target output has settled from previous rising edge. Sample SWDIO here!
                             swclk_o <= 1'b0;
                             swdio_t <= 1'b1; // Input
+                            target_ack[bit_idx[1:0]] <= swdio_i;
                             phase   <= 1'b1;
                         end else begin
-                            // Target drove on rising edge or earlier; sample at end of HIGH phase
+                            // Clock HIGH: Target prepares next bit
                             swclk_o <= 1'b1;
                             phase   <= 1'b0;
-                            target_ack[bit_idx[1:0]] <= swdio_i;
 
                             if (bit_idx == 6'd2) begin
                                 bit_idx <= 6'd0;
-                                // Check ACK on bit 2 sample
-                                if ({swdio_i, target_ack[1], target_ack[0]} == 3'b001) begin
+                                // target_ack was captured during LOW phase
+                                if (target_ack == 3'b001) begin
                                     // ACK == OK (1)
                                     if (rnw) begin
-                                        // Read transfer: Target keeps driving data
+                                        // Read transfer: Target keeps driving data immediately
                                         state <= ST_RDATA;
                                     end else begin
-                                        // Write transfer: Turnaround to host driving
-                                        state <= ST_TRN2;
+                                        // Write transfer: Turnaround so host can drive
+                                        state     <= ST_TRN2;
+                                        shift_reg <= reg_wdata;
                                     end
                                 end else begin
-                                    // ACK is WAIT, FAULT, or timeout: abort to idle cycles
+                                    // ACK is WAIT, FAULT, or timeout: abort to turnaround & idle cycles
                                     state    <= ST_TRN_READ_END;
                                     idle_cnt <= 5'd0;
                                 end
@@ -353,40 +355,45 @@ module axi_swd_engine #(
                 ST_RDATA: begin
                     if (tick) begin
                         if (!phase) begin
+                            // Clock LOW: Target data is stable. Sample here!
                             swclk_o <= 1'b0;
                             swdio_t <= 1'b1; // Host reading
-                            phase   <= 1'b1;
+                            if (bit_idx < 6'd32) begin
+                                shift_reg[bit_idx[4:0]] <= swdio_i;
+                            end else begin
+                                sample_parity <= swdio_i;
+                            end
+                            phase <= 1'b1;
                         end else begin
+                            // Clock HIGH: Target shifts next bit
                             swclk_o <= 1'b1;
                             phase   <= 1'b0;
 
-                            if (bit_idx < 6'd32) begin
-                                shift_reg[bit_idx[4:0]] <= swdio_i;
-                                bit_idx <= bit_idx + 1'b1;
+                            if (bit_idx == 6'd32) begin
+                                // 33rd bit was Parity, captured during LOW phase
+                                reg_rdata  <= shift_reg;
+                                parity_err <= (sample_parity != (^shift_reg)); // Even parity check
+                                state      <= ST_TRN_READ_END;
+                                bit_idx    <= 6'd0;
+                                idle_cnt   <= 5'd0;
                             end else begin
-                                // 33rd bit is Parity
-                                sample_parity <= swdio_i;
-                                reg_rdata     <= shift_reg;
-                                parity_err    <= (swdio_i != (^shift_reg)); // Even parity check
-                                state         <= ST_TRN_READ_END;
-                                bit_idx       <= 6'd0;
+                                bit_idx <= bit_idx + 1'b1;
                             end
                         end
                     end
                 end
 
                 // -------------------------------------------------------------
-                // Read Turnaround (Host takes back SWDIO line)
+                // Read Turnaround (Line transitions Target -> Host)
                 // -------------------------------------------------------------
                 ST_TRN_READ_END: begin
                     if (tick) begin
                         if (!phase) begin
                             swclk_o <= 1'b0;
-                            swdio_t <= 1'b0; // Host output
-                            swdio_o <= 1'b0; // Drive low for upcoming idle cycles
+                            swdio_t <= 1'b1; // Tristate during turnaround cycle!
                             phase   <= 1'b1;
                         end else begin
-                            swclk_o  <= 1'b1;
+                            swclk_o  <= 1'b1; // Target releases bus
                             phase    <= 1'b0;
                             state    <= ST_IDLE_CYCLES;
                             idle_cnt <= 5'd0;
@@ -395,21 +402,19 @@ module axi_swd_engine #(
                 end
 
                 // -------------------------------------------------------------
-                // Phase 4B: Host Turnaround for Write
+                // Phase 4B: Host Turnaround for Write (Line transitions Target -> Host)
                 // -------------------------------------------------------------
                 ST_TRN2: begin
                     if (tick) begin
                         if (!phase) begin
                             swclk_o <= 1'b0;
-                            swdio_t <= 1'b0; // Host drives
-                            swdio_o <= reg_wdata[0];
+                            swdio_t <= 1'b1; // Tristate during turnaround cycle!
                             phase   <= 1'b1;
                         end else begin
-                            swclk_o   <= 1'b1;
-                            phase     <= 1'b0;
-                            state     <= ST_WDATA;
-                            bit_idx   <= 6'd0;
-                            shift_reg <= reg_wdata;
+                            swclk_o <= 1'b1; // Target releases bus
+                            phase   <= 1'b0;
+                            state   <= ST_WDATA;
+                            bit_idx <= 6'd0;
                         end
                     end
                 end
@@ -456,8 +461,8 @@ module axi_swd_engine #(
                             swclk_o <= 1'b1;
                             phase   <= 1'b0;
 
-                            if (idle_cnt >= (cfg_idle - 1'b1)) begin
-                                swdio_o     <= 1'b1; // Idle HIGH
+                            if (cfg_idle == 5'd0 || idle_cnt >= (cfg_idle - 1'b1)) begin
+                                swdio_o     <= 1'b0; // Retain LOW
                                 state       <= ST_IDLE;
                                 fsm_busy    <= 1'b0;
                                 sticky_done <= 1'b1;
@@ -476,8 +481,9 @@ module axi_swd_engine #(
                         if (!phase) begin
                             swclk_o <= 1'b0;
                             if (reg_ctrl[16]) begin
-                                // Raw Read
+                                // Raw Read: sample while clock is LOW
                                 swdio_t <= 1'b1;
+                                shift_reg[bit_idx[4:0]] <= swdio_i;
                             end else begin
                                 // Raw Write
                                 swdio_t <= 1'b0;
@@ -488,13 +494,8 @@ module axi_swd_engine #(
                             swclk_o <= 1'b1;
                             phase   <= 1'b0;
 
-                            if (reg_ctrl[16]) begin
-                                shift_reg[bit_idx[4:0]] <= swdio_i;
-                            end
-
-                            if (bit_idx >= (reg_raw_len - 1'b1)) begin
+                            if (reg_raw_len == 6'd0 || bit_idx >= (reg_raw_len - 1'b1)) begin
                                 if (reg_ctrl[16]) reg_rdata <= shift_reg;
-                                swdio_o     <= 1'b1;
                                 state       <= ST_IDLE;
                                 fsm_busy    <= 1'b0;
                                 sticky_done <= 1'b1;

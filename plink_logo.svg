@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="plinkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <filter id="plinkGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <!-- Background Badge -->
+  <rect width="128" height="128" rx="28" fill="#0b1120" stroke="#1e293b" stroke-width="2"/>
+  
+  <!-- Outer Circuit Rings -->
+  <circle cx="64" cy="64" r="50" fill="none" stroke="#1e293b" stroke-width="2" stroke-dasharray="6 4"/>
+  <circle cx="64" cy="64" r="42" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+
+  <!-- Trace Nodes & Connectors -->
+  <path d="M 36 94 L 36 34 L 70 34 C 84 34, 92 42, 92 54 C 92 66, 84 74, 70 74 L 52 74" 
+        fill="none" stroke="url(#plinkGrad)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" filter="url(#plinkGlow)"/>
+
+  <!-- High-Speed Link Lightning Pulse inside the P loop -->
+  <path d="M 68 46 L 60 58 L 74 58 L 62 70" 
+        fill="none" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Target Contact Pads -->
+  <circle cx="36" cy="94" r="5" fill="#10b981"/>
+  <circle cx="52" cy="74" r="4.5" fill="#38bdf8"/>
+  <circle cx="36" cy="34" r="4.5" fill="#38bdf8"/>
+  <circle cx="92" cy="94" r="4" fill="#38bdf8" opacity="0.6"/>
+  <path d="M 92 94 L 92 84 L 78 84" fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-dasharray="2 3" opacity="0.6"/>
+</svg>

@@ -26,6 +26,11 @@ set xdc_file [file normalize [file join $repo_root "constraints" "t9_programmer.
 add_files -fileset constrs_1 -norecurse $xdc_file
 set_property target_constrs_file $xdc_file [current_fileset -constrset]
 
+# Update module reference if needed
+puts "==> Refreshing Block Design module references..."
+catch { update_module_reference design_programmer_axi_swd_0_0 }
+catch { reset_run design_programmer_axi_swd_0_0_synth_1 }
+
 # Launch Synthesis
 puts "==> Launching Synthesis (synth_1)..."
 reset_run impl_1 -quiet

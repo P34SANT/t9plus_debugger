@@ -18,4 +18,4 @@ Write-Host "==> Executing deployment on $BoardIP..."
 ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "cd ~/staging && echo xilinx | sudo -S bash t9_programmer/deploy.sh"
 
 Write-Host "`n==> Verifying running services on $BoardIP..."
-ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "systemctl status t9-fpga t9-openocd t9-uart-bridge t9-io-daemon --no-pager"
+ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "systemctl status t9-fpga t9-cmsis-dap t9-uart-bridge t9-io-daemon --no-pager"

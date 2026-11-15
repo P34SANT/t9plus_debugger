@@ -1,60 +1,56 @@
-# Antminer T9+ Universal CMSIS-DAP v2 Debugger & Multi-Protocol Pod
+# Plink // Multi-Protocol Hardware Debug Probe & Programmer Pod
+**Turnkey FPGA-Accelerated Debugger, Dual UART & Multi-Target Programmer on Antminer T9+**
 
-Transform any Antminer T9+ Control Board (Xilinx Zynq XC7Z010-1CLG400C) into a turnkey, high-speed **CMSIS-DAP v2 Hardware Debug Probe**, dual TCP UART bridge, and target automation pod over Gigabit Ethernet.
+![Plink Logo](plink_logo.svg)
 
----
-
-## Key Highlights
-
-- **FPGA Hardware SWD Accelerator:** Custom Verilog engine (`axi_swd_engine.v`) integrated directly into the Zynq PL at `0x43C00000`. Supports **dynamically configurable clock speeds on the fly from 100 kHz up to 25.0 MHz** with zero CPU overhead and zero jitter.
-- **Fail-Safe Hybrid Architecture:** Dynamic multiplexer allows seamless switching between FPGA hardware acceleration and legacy EMIO bit-banging (`REG_CTRL[15]`).
-- **Standard CMSIS-DAP v2 (USB/IP):** Exposes high-speed USB 2.0 (480 Mbps) bulk endpoints directly over IP. Zero driver installation needed on Windows (native WinUSB `0d28:0204`).
-- **Complete STM32 Compatibility:** Works out of the box with **ALL STM32 families** (F0, F1, F2, F3, F4, F7, G0, G4, L0, L1, L4, L5, H7, U5, C0, WB, WL).
-- **Broad ARM Cortex-M Ecosystem Support:** Native SWD support for **NXP** (LPC, i.MX RT), **TI** (MSP432, CC13xx/CC26xx), **Microchip/Atmel** (SAMD, SAME), **Raspberry Pi** (RP2040, RP2350), and **WCH** (CH32F series).
-- **ESP32 Family UART Programming:** Full automated flashing for **ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C6, and ESP8266** using `esptool.py` over TCP socket with automated bootloader sequencing.
-- **Clean LED Signaling:**
-  - **Bicolor LED D3 (PS MIO):** Solid OFF when idle; **blinks GREEN only** during active SWD transfers/debugging. Red LED remains completely OFF (no red/green flashing).
-  - **PL User LEDs D4, D5, D6, D7 (D8):** Active-low pins are driven high (`1'b1`) in the FPGA bitstream, remaining **solid OFF by default**.
-  - **D1 LED:** Solid GREEN indicates FPGA bitstream is loaded and operational.
-- **Header J3 Pinout:** 3.3V LVCMOS SWD, primary UART, and target reset on standard 2.54mm dual-row header. No target `BOOT0` pin required.
+Transform any Antminer T9+ Control Board (Xilinx Zynq XC7Z010-1CLG400C) into **Plink** — a high-speed **CMSIS-DAP v2 Hardware Debugger**, **Native USB Virtual COM Port (CDC-ACM)**, and web-driven multi-target programming pod over Gigabit Ethernet.
 
 ---
 
-## Quick-Start: Convert a Raw T9 Board to Automated Debugger
+## Key Features
 
-If you are starting from a raw Antminer T9+ board, follow these steps to deploy the turnkey debugger in under 5 minutes:
-
-### Step 1: Install Base PYNQ Linux Image
-Follow the base setup instructions from the **[Antminer T9+ PYNQ Devboard](https://github.com/P34SANT/t9plus-devboard.git)** repository:
-1. Flash the PYNQ SD card image provided in `t9plus-devboard`.
-2. Insert SD card into T9+, connect Ethernet, and power on.
-3. Verify SSH connection:
-   ```bash
-   ssh xilinx@192.168.2.99
-   # Default password: xilinx
-   ```
-
-### Step 2: Clone and Install `t9plus_debugger`
-Run the automated turnkey installer directly on the board:
-```bash
-git clone https://github.com/P34SANT/t9plus_debugger.git
-cd t9plus_debugger/t9_programmer
-chmod +x deploy.sh
-./deploy.sh
-```
-
-### Step 3: What the Installer Automates
-The `deploy.sh` script installs and starts all systemd background daemons:
-- **`t9-fpga.service`:** Automatically programs the Zynq PL bitstream on boot.
-- **`t9-cmsis-dap.service`:** Starts the CMSIS-DAP v2 USB/IP server on port 3240.
-- **`t9-uart-bridge.service`:** Bridges UART0 to TCP port 2000 and UART1 to TCP port 2001.
-- **`t9-io-daemon.service`:** Exposes the REST API and target pin controller on port 8080.
+- **FPGA Hardware SWD Acceleration (`axi_swd_engine.v`):** Custom RTL core synthesized in Zynq PL at `0x43C00000`. Supports dynamic clock scaling from **100 kHz up to 25.0 MHz** on the fly with zero CPU jitter and timing closure.
+- **Native Windows USB Composite Device (USB/IP):**
+  - **Interface 0:** WinUSB CMSIS-DAP v2 (Microsoft OS 2.0 & 1.0 descriptors with GUID `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`). Automatic driver binding on Windows 7, 8.1, 10, and 11.
+  - **Interface 1 & 2:** Standard USB CDC-ACM Virtual COM Port (`usbser.sys`). Enumerate a **native `COMx` port** in Windows Device Manager automatically.
+- **Dynamic Bicolor Status Signaling (LED D3):**
+  - **Flash Programming:** Blinks **GREEN ONLY** (fast 60ms toggle). Red LED stays strictly OFF.
+  - **Interactive Debugging:** Blinks **alternating Green & Red** (Green ON / Red OFF $\leftrightarrow$ Green OFF / Red ON, 80ms cycle). Never illuminated at the same time.
+  - **Idle / Disconnected:** Both LEDs OFF (target pins safely tristated).
+- **Zero-Polling Windows Tray Utility (`plink-tray.exe`):**
+  - Lightweight system tray app built in **Go 1.20** (natively supporting Windows 7 through 11).
+  - Passive TCP socket event wait: **0% CPU consumption and zero network polling packets**. Automatically attaches USB/IP when the pod powers on.
+- **Tabbed Web Management Interface (Port 8080):**
+  - **Tab 1 (Dashboard & States):** System architecture state, hardware controls (nRST pulse, BOOT0, ESP32 handshake), and embedded live UART0 serial terminal.
+  - **Tab 2 (UART Programming):** Multi-engine flasher supporting STM32 (`stm32flash`) and ESP32 (`esptool.py`) with drag-and-drop file upload (`.hex`, `.bin`, `.elf`), baud rate configuration (9600 to 921600), and real-time Server-Sent Events (SSE) execution log streaming.
+  - **Tab 3 (Pin Telemetry & Hardware):** Live voltage/logic level monitoring of all J3/J4 header pins.
 
 ---
 
-## Hardware Pinout & Wiring (Header J3)
+## Device Support & Testing Status
 
-All SWD, UART, and target control signals are routed to the **J3 expansion header** (2x12 dual-row 2.54mm connector, 3.3V LVCMOS):
+| Device / Architecture | Protocol / Interface | Status | Test Details & Verification Notes |
+| :--- | :--- | :---: | :--- |
+| **STM32F407VG (Cortex-M4)** | SWD (CMSIS-DAP v2) | **TESTED & VERIFIED** | **100% verified** at 25.0 MHz. 1024 KiB flash programmed & verified via OpenOCD. Single-step debugged in IAR EWARM & pyOCD. |
+| **STM32F4 Series (F401, F405, F411, F429)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Same CoreSight ADIv5 debug architecture as F407. Uses standard STM32 flash loader algorithms. |
+| **STM32F1 Series (F103 "BluePill", F100, F105)** | SWD & UART Bootloader | **SUPPORTED** | SWD via OpenOCD; UART bootloader via onboard `stm32flash` on J3 pins 7/8. |
+| **STM32F0 / F2 / F3 / F7 Series** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard ARM SWD DPIDR / MEM-AP protocol. Verified protocol compliance. |
+| **STM32G0 / G4 / L0 / L1 / L4 / L5 Series** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Low-power Cortex-M0+/M4/M33. Fully supported via IDE flash algorithms. |
+| **STM32H7 Series (Dual/Single Core)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | CoreSight DPv2 / SWD multi-drop architecture compatible. |
+| **ESP32 (ESP-WROOM-32, ESP32-D0WD)** | UART ROM Bootloader | **SUPPORTED & TESTED** | Flashed via onboard `esptool.py v4.7.0` with automated IO0 (J3-15) and EN (J3-5) hardware reset. |
+| **ESP32-S2 / ESP32-S3 / ESP32-C3 / ESP32-C6** | UART ROM Bootloader | **SUPPORTED** | Fully supported by `esptool.py` over primary UART0 at up to 921,600 baud. |
+| **ESP8266 (ESP-01, ESP-12E/F)** | UART ROM Bootloader | **SUPPORTED** | Handshake via IO0 and RST pins using onboard `esptool.py`. |
+| **Raspberry Pi RP2040 / RP2350** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Multi-drop SWD supported by CMSIS-DAP v2 protocol. |
+| **Nordic nRF52832 / nRF52840** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Cortex-M4 SWD standard target. Compatible with Nordic nRF Command Line Tools. |
+| **NXP LPC / i.MX RT (Cortex-M7)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard CoreSight debug port. Supported via MCUXpresso, Keil, and IAR. |
+| **Microchip SAMD21 / SAME54** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard ARM CoreSight target. |
+| **WCH CH32V (RISC-V)** | Proprietary 1-Wire SDI | *NOT TESTED* | Non-standard 1-wire debug protocol. Requires dedicated SDI PHY core (planned Phase 2B). |
+
+---
+
+## Hardware Pinout (Header J3)
+
+All SWD, UART, and target control lines are routed to the **J3 expansion header** (2x12 dual-row 2.54mm header, 3.3V LVCMOS on Banks 34 & 35):
 
 ```text
  1    3    5    7    9    11   13   15   17   19   21   23
@@ -65,150 +61,50 @@ All SWD, UART, and target control signals are routed to the **J3 expansion heade
 └────────────────────────────────────────────────────────┘
 ```
 
-| J3 Pin # | FPGA Pin | Signal Name | Target MCU Connection | Description |
+| J3 Pin # | FPGA Pin | Signal Name | Target MCU Connection | Function & Electrical Characteristics |
 | :---: | :---: | :--- | :--- | :--- |
-| **Pin 1, 2** | `GND` | **GND** | **Target GND** | Common Ground (Required) |
-| **Pin 3** | `P16` | **SWCLK** | **Target SWCLK** (e.g. PA14) | SWD Clock (1 MHz default) |
-| **Pin 4** | `P15` | **SWDIO** | **Target SWDIO** (e.g. PA13) | Bidirectional SWD Data (Internal pullup) |
-| **Pin 5** | `T14` | **nRST** | **Target NRST / ESP32 EN** | Target Hardware Reset (Open-Drain) |
-| **Pin 6** | `T10` | *Unused* | *Leave disconnected* | BOOT0 not used |
-| **Pin 7** | `C20` | **UART TX** | **Target RX / ESP32 RXD0** | Primary UART TX (TCP port 2000) |
-| **Pin 8** | `B20` | **UART RX** | **Target TX / ESP32 TXD0** | Primary UART RX (TCP port 2000) |
-| **Pin 15** | `T15` | **TARGET_IO0**| **ESP32 GPIO0** *(Optional)* | Auxiliary Target Control / ESP32 Boot Mode |
-| **Pin 16** | `VCC` | **+3.3V** | **Target 3.3V** *(Optional)* | Onboard 3.3V supply rail |
-| **Pin 23, 24**| `GND` | **GND** | **Target GND** | Ground reference |
+| **Pin 1, 2** | `GND` | **GND** | **Target GND** | System Ground (Required) |
+| **Pin 3** | `P16` | **SWCLK** | **Target SWCLK** | SWD Clock Output (FPGA Core, 100 kHz - 25 MHz, 3.3V) |
+| **Pin 4** | `P15` | **SWDIO** | **Target SWDIO** | Bidirectional Data Line (FPGA Core, 3.3V with PULLUP) |
+| **Pin 5** | `T14` | **nRST / EN** | **Target nRST / ESP32 EN** | Open-Drain Reset Line (Active Low, 50ms hardware pulse) |
+| **Pin 6** | `T10` | **BOOT0** | **STM32 BOOT0** | Hardware Bootloader Select (High: ROM, Low: User Flash) |
+| **Pin 7** | `C20` | **UART0_TX**| **Target RXD** | Primary UART TX (Zynq PS `/dev/ttyPS1`, 9600-921600 baud) |
+| **Pin 8** | `B20` | **UART0_RX**| **Target TXD** | Primary UART RX (Zynq PS `/dev/ttyPS1`, 9600-921600 baud) |
+| **Pin 11**| `P14` | **UART1_TX**| **Auxiliary RXD** | Secondary UART TX (AXI UARTLite, 115200 baud) |
+| **Pin 12**| `R14` | **UART1_RX**| **Auxiliary TXD** | Secondary UART RX (AXI UARTLite, 115200 baud) |
+| **Pin 15**| `T15` | **IO0** | **ESP32 GPIO0** | Auto-Download Bootloader Handshake for ESP32 |
+| **Pin 16**| `VCC` | **VCC** | *(Optional)* | 3.3V Power Output |
 
 ---
 
-## Connecting from Windows / Linux Hosts
+## Baud Rate Support & Characteristics
 
-### 1-Click Windows USB/IP Attach
-Run the provided batch script or PowerShell command:
-```powershell
-# Attach CMSIS-DAP over USB/IP
-& "C:\Program Files\USBip\usbip.exe" attach -r 192.168.2.99 -b 1-1
-
-# Verify attachment
-& "C:\Program Files\USBip\usbip.exe" port
-```
-Windows automatically binds the probe under **Universal Serial Bus devices** as **ARM CMSIS-DAP** (`0d28:0204`).
-
-### Using OpenOCD
-Connect to any STM32 or ARM target:
-```bash
-openocd -f interface/cmsis-dap.cfg \
-        -c "cmsis-dap backend usb_bulk; transport select swd" \
-        -f target/stm32f4x.cfg \
-        -c "adapter speed 1000; init; reset halt"
-```
-
-### Using IDEs (STM32CubeIDE / Keil µVision / IAR / CLion / VS Code)
-1. In your project Debug Configuration, select **CMSIS-DAP**.
-2. Set protocol to **SWD** and port to **USB**.
-3. Select probe `ARM CMSIS-DAP (0204000100000000)`.
-4. Click **Debug** / **Download**.
-5. Observe **LED D3** blinking green during active flash and debugging operations!
+| Channel | Physical Interface | Baud Rate Range | Implementation & Constraints |
+| :--- | :--- | :--- | :--- |
+| **Primary UART0** | J3 Pins 7 & 8 | **9,600 to 921,600+ baud** (Dynamic) | Driven by Zynq PS hardware UART controller (`/dev/ttyPS1`). Full dynamic clock divisor supporting all standard baud rates. Bridged to native Windows `COMx` and TCP `:2000`. |
+| **Secondary UART1**| J3 Pins 11 & 12| **115,200 baud** (Fixed) | Driven by AXI UARTLite PL core. Fixed clock divider synthesized in bitstream. Bridged to TCP `:2001`. |
 
 ---
 
-## Target Compatibility Guide
+## Windows Client Setup
 
-### 1. STM32 Families (Full Support Out of the Box)
-- **Supported:** STM32F0, F1, F2, F3, F4, F7, G0, G4, L0, L1, L4, L5, H7, U5, C0, WB, WL.
-- **Why it works reliably:**
-  - **Dormant-to-SWD Switching:** Fix in `dap_swj_sequence()` handles full 256-bit unlock sequences for modern low-power families (G0, G4, L5, U5, H7).
-  - **Clock Domain Crossing:** Enforces 8 ADIv5 idle cycles (`SWDIO=0`) following AP transfers, preventing internal bus synchronization stalls (`ack=WAIT` / `ack=5`).
-  - **Connect Under Reset:** Hardware `nRST` is driven open-drain (`zynq_pin_dir_in` when high, `zynq_set_pin(0)` when low), allowing clean connection to MCUs in low-power sleep modes or with disabled SWD pins.
+### Automatic Connection (Recommended)
+1. Run **`plink-tray.exe`** (in project root).
+2. It appears in the notification tray and automatically links USB/IP when the pod is detected.
+3. Windows Device Manager will show:
+   - `Plink CMSIS-DAP v2` under **Universal Serial Bus devices** (WinUSB).
+   - `USB Serial Device (COMx)` under **Ports (COM & LPT)** (native CDC-ACM).
 
-### 2. Other ARM Cortex-M MCUs
-- **NXP:** LPC55xx, LPC11xx, LPC8xx, i.MX RT10xx, Kinetis.
-- **Texas Instruments:** MSP432, SimpleLink CC13xx, CC26xx, CC32xx.
-- **Microchip/Atmel:** SAMD21, SAME54, SAMC21.
-- **Raspberry Pi:** RP2040 (Cortex-M0+), RP2350 (Cortex-M33).
-- **WCH:** CH32F103, CH32F203 (ARM Cortex-M cores).
-
-### 3. ESP32 Family UART Flashing
-All ESP32 chips are programmed via ROM UART bootloader using `esptool.py`. The Antminer T9+ provides automated bootloader entry and flashing over the network:
-
-#### Wiring ESP32 to J3 Header:
-- T9+ J3 Pin 7 (TX) -> ESP32 RXD0
-- T9+ J3 Pin 8 (RX) -> ESP32 TXD0
-- T9+ J3 Pin 5 (nRST) -> ESP32 EN (CHIP_PU)
-- T9+ J3 Pin 15 (IO0) -> ESP32 GPIO0
-- T9+ J3 Pin 1/2 (GND) -> ESP32 GND
-
-#### Automated Flashing with `t9_esp32_flash.py`:
-```bash
-# Read chip flash info
-python scripts/t9_esp32_flash.py --ip 192.168.2.99 flash_id
-
-# Flash firmware image
-python scripts/t9_esp32_flash.py --ip 192.168.2.99 write_flash 0x10000 app.bin
-
-# Erase flash
-python scripts/t9_esp32_flash.py --ip 192.168.2.99 erase_flash
-```
-The script calls `/api/esp32/bootloader` on the board to pull `GPIO0` low and pulse `EN`, connects `esptool.py` to `socket://192.168.2.99:2000`, and then pulses `EN` via `/api/esp32/reset` to start the application automatically!
+### Manual Batch Script
+Run `attach_t9.bat` from Windows cmd or PowerShell to link USB/IP on demand.
 
 ---
 
-## Status LED Behavior Reference
-
-| LED | Source | Color | Idle State | Debugging / Flashing State | Description |
-| :---: | :---: | :---: | :---: | :---: | :--- |
-| **D1** | FPGA Pin | Green | **Solid ON** | **Solid ON** | FPGA Done (Bitstream loaded) |
-| **D3** | PS MIO 37/38 | Red/Green | **Solid OFF** | **Blinking GREEN** | CMSIS-DAP SWD Activity Indicator. Red is held OFF. |
-| **D4** | PL Pin F16 | Yellow | **Solid OFF** | **Solid OFF** | Kept OFF (`1'b1` active-low) |
-| **D5** | PL Pin M19 | Red | **Solid OFF** | **Solid OFF** | Kept OFF (`1'b1` active-low) |
-| **D6** | PL Pin M17 | Green | **Solid OFF** | **Solid OFF** | Kept OFF (`1'b1` active-low) |
-| **D7** | PL Pin L19 | Red | **Solid OFF** | **Solid OFF** | Kept OFF (`1'b1` active-low) |
-
----
-
-## REST API & Web Dashboard
-
-The onboard I/O daemon provides a REST API on port `8080`:
-
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/pins` | Get status of all target I/O pins |
-| `POST` | `/api/pins/<name>` | Set target pin value (`{"value": 0 or 1}`) |
-| `POST` | `/api/pins/<name>/pulse` | Pulse target pin (`{"duration_ms": 50}`) |
-| `POST` | `/api/esp32/bootloader` | Enter ESP32 ROM bootloader mode (`GPIO0=0`, pulse `EN`) |
-| `POST` | `/api/esp32/reset` | Reboot ESP32 into normal execution mode (pulse `EN`) |
-| `POST` | `/api/programmer/bootloader` | Pulse hardware reset |
-| `POST` | `/api/led/status?mode=idle` | Set LED D3 mode (`idle`, `off`, `programming`, `success`) |
-
----
-
-## Repository Structure
-
+## Web Dashboard & Flasher
+Access the web dashboard at:
 ```text
-t9plus_debugger/
-├── constraints/
-│   ├── t9_programmer.xdc      # FPGA pin constraints for J3 header & PL LEDs
-│   └── t9_v12_pins.xdc        # Master pin map reference for Antminer T9+ V1.2
-├── scripts/
-│   ├── t9_bit2pcap.py         # Vivado .bit to Zynq PCAP DMA .bin converter
-│   ├── t9_load_bit.py         # Runtime Linux FPGA manager loader
-│   └── t9_esp32_flash.py      # Network ESP32 automated programmer helper
-├── t9_programmer/
-│   ├── bin/                   # Helper CLI utilities (t9-reset, t9-io)
-│   ├── io_daemon/             # Web/REST diagnostic daemon (port 8080)
-│   ├── openocd/               # Standalone OpenOCD scripts
-│   ├── systemd/               # Linux systemd service units
-│   ├── uart_bridge/           # TCP to UART socket daemon (ports 2000/2001)
-│   ├── usbip_dap/             # CMSIS-DAP v2 USB/IP engine source code
-│   └── deploy.sh              # 1-step turnkey board installer
-├── vivado/
-│   ├── build_programmer_bitstream.tcl  # Automated Vivado build script
-│   ├── create_programmer_project.tcl   # Block design generator
-│   └── top_programmer.v       # Top-level Verilog wrapper (IOBUFs, LED assignments)
-├── t9_programmer.bit          # Synthesized FPGA bitstream
-└── t9_programmer_pcap.bin     # Ready-to-load PCAP binary
+http://192.168.2.99:8080
 ```
-
----
-
-## License
-MIT License.
+- **01 // Dashboard & States:** Live system diagnostics, hardware reset controls, and embedded serial terminal.
+- **02 // UART Programming:** High-speed firmware flashing for STM32 and ESP32 with real-time log streaming.
+- **03 // Pin Telemetry & Hardware:** Live J3 header logic levels.

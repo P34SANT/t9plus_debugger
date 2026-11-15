@@ -78,6 +78,72 @@ typedef struct __attribute__ ((__packed__)) {
 } USB_DEVICE_QUALIFIER_DESCRIPTOR;
 
 typedef struct __attribute__ ((__packed__)) {
+    byte bLength;
+    byte bDescriptorType;   // 0x0B (IAD)
+    byte bFirstInterface;   // 1
+    byte bInterfaceCount;   // 2
+    byte bFunctionClass;    // 0x02 (CDC)
+    byte bFunctionSubClass; // 0x02 (ACM)
+    byte bFunctionProtocol; // 0x01 (AT commands)
+    byte iFunction;         // 5 ("Plink Serial Port")
+} USB_IAD_DESCRIPTOR;
+
+typedef struct __attribute__ ((__packed__)) {
+    byte bLength;            // 5
+    byte bDescriptorType;    // 0x24 (CS_INTERFACE)
+    byte bDescriptorSubtype; // 0x00 (Header)
+    word bcdCDC;             // 0x0110
+} USB_CDC_HEADER_DESCRIPTOR;
+
+typedef struct __attribute__ ((__packed__)) {
+    byte bLength;            // 5
+    byte bDescriptorType;    // 0x24 (CS_INTERFACE)
+    byte bDescriptorSubtype; // 0x01 (Call Management)
+    byte bmCapabilities;     // 0x00
+    byte bDataInterface;     // 2
+} USB_CDC_CALL_MGMT_DESCRIPTOR;
+
+typedef struct __attribute__ ((__packed__)) {
+    byte bLength;            // 4
+    byte bDescriptorType;    // 0x24 (CS_INTERFACE)
+    byte bDescriptorSubtype; // 0x02 (ACM)
+    byte bmCapabilities;     // 0x02 (Line Coding & Serial State)
+} USB_CDC_ACM_DESCRIPTOR;
+
+typedef struct __attribute__ ((__packed__)) {
+    byte bLength;            // 5
+    byte bDescriptorType;    // 0x24 (CS_INTERFACE)
+    byte bDescriptorSubtype; // 0x06 (Union)
+    byte bControlInterface;  // 1
+    byte bSubordinateInterface0; // 2
+} USB_CDC_UNION_DESCRIPTOR;
+
+typedef struct __attribute__ ((__packed__)) {
+    USB_CONFIGURATION_DESCRIPTOR config;
+    
+    // Interface 0: CMSIS-DAP v2 (WinUSB)
+    USB_INTERFACE_DESCRIPTOR     intf_dap;
+    USB_ENDPOINT_DESCRIPTOR      ep_dap_out; // EP1 OUT Bulk
+    USB_ENDPOINT_DESCRIPTOR      ep_dap_in;  // EP1 IN Bulk
+
+    // Interface Association Descriptor for CDC-ACM
+    USB_IAD_DESCRIPTOR           iad_cdc;
+
+    // Interface 1: CDC Communication
+    USB_INTERFACE_DESCRIPTOR     intf_cdc_comm;
+    USB_CDC_HEADER_DESCRIPTOR    cdc_header;
+    USB_CDC_CALL_MGMT_DESCRIPTOR cdc_call_mgmt;
+    USB_CDC_ACM_DESCRIPTOR       cdc_acm;
+    USB_CDC_UNION_DESCRIPTOR     cdc_union;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc_notify; // EP2 IN Interrupt
+
+    // Interface 2: CDC Data
+    USB_INTERFACE_DESCRIPTOR     intf_cdc_data;
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc_out;    // EP3 OUT Bulk
+    USB_ENDPOINT_DESCRIPTOR      ep_cdc_in;     // EP3 IN Bulk
+} CONFIG_PLINK_COMPOSITE;
+
+typedef struct __attribute__ ((__packed__)) {
     USB_CONFIGURATION_DESCRIPTOR dev_conf0;
     USB_INTERFACE_DESCRIPTOR     dev_int0;
     USB_ENDPOINT_DESCRIPTOR      ep_out;

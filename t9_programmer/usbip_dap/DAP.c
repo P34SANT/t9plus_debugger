@@ -30,8 +30,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "dap_config.h"
-#include "dap.h"
+#include "DAP_config.h"
+#include "DAP.h"
 
 /*- Definitions -------------------------------------------------------------*/
 #define ARRAY_SIZE(x)  ((int)(sizeof(x) / sizeof(0[x])))
@@ -233,6 +233,7 @@ static int dap_idle_cycles;
 static int dap_retry_count;
 static int dap_match_retry_count;
 static int dap_clock_delay;
+struct timespec dap_last_prog_ts = {0, 0};
 
 static void (*dap_swj_run)(int);
 static void (*dap_swd_write)(uint32_t, int);
@@ -380,6 +381,11 @@ static int dap_swd_operation(int req, uint32_t *data)
     for (int timeout = 0; timeout < 100000; timeout++) {
       st = swd_hw_mem[SWD_REG_STATUS / 4];
       if ((st & 1) == 0) break;
+    }
+
+    if (st & 1) {
+      // Hardware FSM did not complete in time
+      return DAP_TRANSFER_ERROR;
     }
 
     int ack     = (st >> 1) & 0x07;
@@ -681,8 +687,8 @@ static void dap_setup_clock(int freq)
 
   int sw_freq = (freq > 2000000) ? 2000000 : freq;
   dap_clock_delay = (DAP_CONFIG_DELAY_CONSTANT * 1000) / sw_freq;
-  if (dap_clock_delay < 350)
-    dap_clock_delay = 350; // Minimum delay for signal settling on Zynq EMIO
+  if (dap_clock_delay < 150000)
+    dap_clock_delay = 150000; // Minimum delay for signal settling on Zynq EMIO (verified with target STM32)
 
   dap_swj_run     = dap_swj_run_slow;
   dap_swd_write   = dap_swd_write_slow;
@@ -1119,7 +1125,7 @@ static void dap_transfer_block(void)
     bool needs_posted = dap_needs_posted_read(request);
     int transfers = needs_posted ? (req_count + 1) : req_count;
 
-    for (int i = 0; i < transfers; i++)
+    for (int i = 0; i < transfers && !dap_buf_error && !dap_abort; i++)
     {
       if (i == req_count)
         request = SWD_DP_R_RDBUFF | DAP_TRANSFER_RnW;
@@ -1133,14 +1139,26 @@ static void dap_transfer_block(void)
         continue;
 
       dap_resp_add_word(data);
+      if (dap_buf_error) {
+        ack = DAP_TRANSFER_ERROR;
+        break;
+      }
       resp_count++;
     }
   }
   else // Write
   {
-    for (int i = 0; i < req_count; i++)
+    if (req_count > 4) {
+      dap_mark_programming();
+    }
+
+    for (int i = 0; i < req_count && !dap_buf_error && !dap_abort; i++)
     {
       data = dap_req_get_word();
+      if (dap_buf_error) {
+        ack = DAP_TRANSFER_ERROR;
+        break;
+      }
 
       ack = dap_transfer_word(request, &data);
 
@@ -1284,7 +1302,9 @@ static void dap_swj_sequence(void)
       swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
       // HW_EN=1 (bit 15), RAW_MODE=1 (bit 14), START=1 (bit 0)
       swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
-      while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+      for (int t = 0; t < 100000; t++) {
+        if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
+      }
       size -= sz;
     }
     dap_resp_add_byte(DAP_OK);
@@ -1345,7 +1365,9 @@ static void dap_swd_sequence(void)
           swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
           // HW_EN=1 (bit 15), RAW_DIR=1 (read, bit 16), RAW_MODE=1 (bit 14), START=1 (bit 0)
           swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 16) | (1 << 15) | (1 << 14) | 1;
-          while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+          for (int t = 0; t < 100000; t++) {
+            if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
+          }
           int value = swd_hw_mem[SWD_REG_RDATA / 4] & 0xFF;
           dap_resp_add_byte(value);
           count -= sz;
@@ -1358,7 +1380,9 @@ static void dap_swd_sequence(void)
           swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
           // HW_EN=1 (bit 15), RAW_DIR=0 (write), RAW_MODE=1 (bit 14), START=1 (bit 0)
           swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
-          while (swd_hw_mem[SWD_REG_STATUS / 4] & 1);
+          for (int t = 0; t < 100000; t++) {
+            if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
+          }
           count -= sz;
         }
       }
@@ -1587,7 +1611,7 @@ int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size
   dap_resp_add_byte(cmd);
 
   if (cmd == ID_DAP_TRANSFER || cmd == ID_DAP_TRANSFER_BLOCK ||
-      cmd == ID_DAP_SWD_SEQUENCE)
+      cmd == ID_DAP_SWD_SEQUENCE || cmd == ID_DAP_SWJ_SEQUENCE)
   {
     dap_activity_blink();
   }

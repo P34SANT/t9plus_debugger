@@ -15,9 +15,9 @@
 #define DAP_CONFIG_PACKET_SIZE         512
 #define DAP_CONFIG_PACKET_COUNT        1
 
-#define DAP_CONFIG_VENDOR_STR          "ARM"
-#define DAP_CONFIG_PRODUCT_STR         "CMSIS-DAP"
-#define DAP_CONFIG_SER_NUM_STR         "0204000100000000"
+#define DAP_CONFIG_VENDOR_STR          "Plink"
+#define DAP_CONFIG_PRODUCT_STR         "Plink"
+#define DAP_CONFIG_SER_NUM_STR         "0204000100000002"
 #define DAP_CONFIG_CMSIS_DAP_VER_STR   "2.0.0"
 
 #define DAP_CONFIG_RESET_TARGET_FN     zynq_reset_target
@@ -72,11 +72,12 @@ static inline int zynq_swd_hw_init(void) {
 
     if (swd_hw_mem[SWD_REG_ID / 4] == 0x53574401) {
         swd_hw_available = true;
-        // Default: 1.0 MHz (div=49), HW_EN=1 (bit 15), IDLE_CYCLES=8 (bits 12:8)
-        swd_hw_mem[SWD_REG_CLK_DIV / 4] = 49;
+        // Default: 2.0 MHz (div=24), HW_EN=1 (bit 15), IDLE_CYCLES=8 (bits 12:8)
+        swd_hw_mem[SWD_REG_CLK_DIV / 4] = 24;
         swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (8 << 8);
     } else {
         swd_hw_available = false;
+        swd_hw_mem[SWD_REG_CTRL / 4] = 0; // Clear HW_EN bit 15 to grant EMIO pin control
     }
     return 0;
 }
@@ -123,7 +124,7 @@ static inline void zynq_set_pin(int pin, int val) {
 }
 
 static inline int zynq_read_pin(int pin) {
-    return (gpio_mem[DATA_2 / 4] >> pin) & 1;
+    return (gpio_mem[DATA_2_RO / 4] >> pin) & 1;
 }
 
 static inline void zynq_pin_dir_out(int pin) {
@@ -221,25 +222,54 @@ static inline void DAP_CONFIG_SETUP(void) {
     DAP_CONFIG_nRESET_write(1);
 }
 
-static inline void zynq_d3_led_set(int green_on) {
+extern struct timespec dap_last_prog_ts;
+
+static inline void zynq_d3_led_raw(int red_on, int green_on) {
     if (!gpio_mem) return;
-    // Red (bit 5) is always kept OFF (0), Green (bit 6) set according to green_on
     uint32_t mask = (~((1 << MIO_D3_RED) | (1 << MIO_D3_GREEN))) & 0xFFFF;
-    uint32_t data = (green_on ? (1 << MIO_D3_GREEN) : 0);
+    uint32_t data = ((red_on ? 1 : 0) << MIO_D3_RED) | ((green_on ? 1 : 0) << MIO_D3_GREEN);
     gpio_mem[MASK_DATA_1_LSW / 4] = (mask << 16) | data;
+}
+
+static inline void zynq_d3_led_set(int green_on) {
+    zynq_d3_led_raw(0, green_on);
+}
+
+static inline void dap_mark_programming(void) {
+    clock_gettime(CLOCK_MONOTONIC, &dap_last_prog_ts);
+}
+
+static inline void dap_activity_idle(void) {
+    zynq_d3_led_raw(0, 0);
 }
 
 static inline void dap_activity_blink(void) {
     static struct timespec last_toggle = {0, 0};
-    static int led_state = 0;
+    static int phase = 0;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
 
+    long prog_ms = (now.tv_sec - dap_last_prog_ts.tv_sec) * 1000 +
+                   (now.tv_nsec - dap_last_prog_ts.tv_nsec) / 1000000;
+    bool is_programming = (prog_ms < 1200); // Active flash programming in last 1.2s
+
     long elapsed_ms = (now.tv_sec - last_toggle.tv_sec) * 1000 + 
                       (now.tv_nsec - last_toggle.tv_nsec) / 1000000;
-    if (elapsed_ms >= 60) {
-        led_state ^= 1;
-        zynq_d3_led_set(led_state);
+
+    int period_ms = is_programming ? 60 : 80;
+    if (elapsed_ms >= period_ms) {
+        phase ^= 1;
+        if (is_programming) {
+            // Programming: blinks green only (Red stays OFF)
+            zynq_d3_led_raw(0, phase ? 1 : 0);
+        } else {
+            // Debugging: blinks both, alternating (never at the same time)
+            if (phase) {
+                zynq_d3_led_raw(0, 1); // Green ON, Red OFF
+            } else {
+                zynq_d3_led_raw(1, 0); // Red ON, Green OFF
+            }
+        }
         last_toggle = now;
     }
 }
@@ -247,7 +277,7 @@ static inline void dap_activity_blink(void) {
 static inline void DAP_CONFIG_DISCONNECT(void) {
     zynq_pin_dir_in(PIN_SWCLK);
     zynq_pin_dir_in(PIN_SWDIO);
-    zynq_d3_led_set(0);
+    dap_activity_idle();
 }
 
 static inline void DAP_CONFIG_CONNECT_SWD(void) {
@@ -265,13 +295,13 @@ static inline void DAP_CONFIG_CONNECT_JTAG(void) {
 static inline void DAP_CONFIG_LED(int index, int state) {
     if (index == 0) { // Connect
         if (state == 0) {
-            zynq_d3_led_set(0);
+            dap_activity_idle();
         }
     } else if (index == 1) { // Running
         if (state) {
             dap_activity_blink();
         } else {
-            zynq_d3_led_set(0);
+            dap_activity_idle();
         }
     }
 }

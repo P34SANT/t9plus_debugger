@@ -197,11 +197,15 @@ class AxiUartLiteBridgeServer:
             return
         for b in data:
             # Wait if Tx FIFO is full (status bit 3 = 0x08)
+            written = False
             for _ in range(1000):
                 status = struct.unpack('<I', self.mem[8:12])[0]
                 if not (status & 0x08):
+                    self.mem[4:8] = struct.pack('<I', b)
+                    written = True
                     break
-            self.mem[4:8] = struct.pack('<I', b)
+            if not written:
+                logger.warning("UART1 Tx FIFO full - dropping byte to prevent bus corruption")
 
     async def poll_task(self):
         while True:

@@ -10,13 +10,15 @@
 # Pin 3: SWCLK
 set_property PACKAGE_PIN P16 [get_ports {j3_swclk}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_swclk}]
-set_property SLEW FAST [get_ports {j3_swclk}]
+set_property SLEW SLOW [get_ports {j3_swclk}]
+set_property DRIVE 8 [get_ports {j3_swclk}]
 
 # Pin 4: SWDIO (Bidirectional with pullup)
 set_property PACKAGE_PIN P15 [get_ports {j3_swdio}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_swdio}]
 set_property PULLUP true [get_ports {j3_swdio}]
-set_property SLEW FAST [get_ports {j3_swdio}]
+set_property SLEW SLOW [get_ports {j3_swdio}]
+set_property DRIVE 8 [get_ports {j3_swdio}]
 
 # Pin 5: nRST (Target Reset - Open-Drain with pullup)
 set_property PACKAGE_PIN T14 [get_ports {j3_nrst}]
