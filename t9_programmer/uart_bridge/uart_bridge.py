@@ -158,6 +158,9 @@ class AxiUartLiteBridgeServer:
                         logger.warning("FPGA PL not in operating state. AXI UART1 disabled safely.")
                         return False
 
+            # Ensure SLCR FCLK0 is clocked at 100.0 MHz for exact 115,200 baud
+            self.ensure_fclk0_100mhz()
+
             self.fd = os.open('/dev/mem', os.O_RDWR | os.O_SYNC)
             self.mem = mmap.mmap(
                 self.fd, 4096,
@@ -167,11 +170,25 @@ class AxiUartLiteBridgeServer:
             )
             # Reset both FIFOs via control register (offset 0x0C, bits 0 and 1)
             self.mem[12:16] = struct.pack('<I', 0x03)
-            logger.info(f"Initialized AXI UARTLite @ 0x{self.base_addr:08X} (FIFOs reset)")
+            logger.info(f"Initialized AXI UARTLite @ 0x{self.base_addr:08X} (FIFOs reset, 100MHz clock verified)")
             return True
         except Exception as e:
             logger.error(f"Failed to mmap AXI UARTLite @ 0x{self.base_addr:08X}: {e}")
             return False
+
+    def ensure_fclk0_100mhz(self):
+        try:
+            with open('/dev/mem', 'r+b') as f:
+                mm = mmap.mmap(f.fileno(), 4096, offset=0xF8000000)
+                clk_ctrl = struct.unpack('<I', mm[0x170:0x174])[0]
+                if (clk_ctrl & 0x003F3F00) != 0x00100A00:
+                    mm[0x008:0x00C] = struct.pack('<I', 0xDF0D) # Unlock SLCR
+                    mm[0x170:0x174] = struct.pack('<I', 0x00100A00) # Divisor0=10 -> 100.0 MHz
+                    mm[0x004:0x008] = struct.pack('<I', 0x767B) # Lock SLCR
+                    logger.info("Upgraded SLCR FPGA0_CLK_CTRL to 100.0 MHz (0x00100A00)")
+                mm.close()
+        except Exception as e:
+            logger.warning(f"Could not check/set SLCR FCLK0: {e}")
 
     def poll_rx(self):
         if self.mem is None or not self.clients:

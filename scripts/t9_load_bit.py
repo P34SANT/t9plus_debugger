@@ -83,8 +83,39 @@ def load_bit(filepath):
     if state == "operating":
         print(f"[+] SUCCESS: FPGA PL configured and state is 'operating'!")
         print(f"[+] D1 (FPGA_DONE) LED should now be GREEN.")
+        configure_fclk0_100mhz()
     else:
         print(f"[-] WARNING: FPGA state is '{state}'. Check dmesg for details.")
+
+def configure_fclk0_100mhz():
+    """
+    Ensure Zynq SLCR FPGA0_CLK_CTRL is set to 100.000 MHz.
+    The factory Antminer FSBL initializes FCLK0 with Divisor=20 (50 MHz).
+    Our Vivado PL design (AXI UARTLite, AXI SWD Engine, AXI Interconnect)
+    is synthesized for 100 MHz. Setting Divisor0=10 (0x0A) provides exactly
+    1000 MHz / 10 = 100.000 MHz, bringing AXI UART1 to accurate 115,200 baud
+    and SWD clock dividers to their true intended frequencies.
+    """
+    try:
+        import mmap, struct
+        SLCR_BASE = 0xF8000000
+        SLCR_LOCK = 0x004
+        SLCR_UNLOCK = 0x008
+        FPGA0_CLK_CTRL = 0x170
+
+        with open('/dev/mem', 'r+b') as f:
+            mm = mmap.mmap(f.fileno(), 4096, offset=SLCR_BASE)
+            # Unlock SLCR (0xDF0D)
+            mm[SLCR_UNLOCK:SLCR_UNLOCK+4] = struct.pack('<I', 0xDF0D)
+            # Divisor0=10 (0x0A), Divisor1=1 (0x01), SRC=IO_PLL (0x00) -> 0x00100A00 (100.0 MHz)
+            mm[FPGA0_CLK_CTRL:FPGA0_CLK_CTRL+4] = struct.pack('<I', 0x00100A00)
+            # Lock SLCR (0x767B)
+            mm[SLCR_LOCK:SLCR_LOCK+4] = struct.pack('<I', 0x767B)
+            val = struct.unpack('<I', mm[FPGA0_CLK_CTRL:FPGA0_CLK_CTRL+4])[0]
+            mm.close()
+            print(f"[+] Configured Zynq SLCR FCLK0 to 100.0 MHz (reg=0x{val:08X})")
+    except Exception as e:
+        print(f"[-] Warning: Unable to adjust SLCR FCLK0 to 100 MHz: {e}", file=sys.stderr)
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:

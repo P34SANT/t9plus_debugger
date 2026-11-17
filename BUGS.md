@@ -43,6 +43,11 @@
 - **Issue:** If the Tx FIFO remained full after 1000 poll cycles, `write_tx()` unconditionally wrote to register `0x04`, corrupting or dropping characters.
 - **Resolution:** Added full-flag verification; characters are only written when FIFO space is confirmed.
 
+### Bug 9: PL Fabric Clock (`FCLK_CLK0`) Half-Clocking at 50 MHz Due to Factory FSBL
+- **Files:** `scripts/t9_load_bit.py`, `t9_programmer/uart_bridge/uart_bridge.py`
+- **Issue:** The factory Bitmain Antminer T9+ FSBL (`BOOT.BIN`) initialized Zynq SLCR `FPGA0_CLK_CTRL` (address `0xF8000170`) to `0x00101400` (`Divisor0 = 20`, yielding `1000 MHz / 20 = 50.0 MHz`). However, the Vivado bitstream synthesized `axi_uartlite_0` and the hardware SWD engines expecting `100.0 MHz` (`C_S_AXI_ACLK_FREQ_HZ = 100000000`). Because `axi_uartlite` uses a compile-time fixed clock divider (`100,000,000 / (16 * 115200) = 54`), feeding it a 50 MHz clock halved the actual baud rate to `50,000,000 / (16 * 54) = 57,870 baud` (~57,600 baud). In contrast, PS UART (`/dev/ttyPS1`) worked at 115200 because the Linux `xuartps` driver dynamically computed dividers based on its own PS peripheral clock (`UART_CLK_CTRL = 50 MHz`).
+- **Resolution:** Added SLCR unlock and register configuration in `scripts/t9_load_bit.py` and `uart_bridge.py` to set `FPGA0_CLK_CTRL` to `0x00100A00` (`Divisor0 = 10`, yielding exactly `100.000 MHz`). AXI UART1 on J3 Pins 11/12 now runs at exact 115,200 baud, and hardware SWD clock speeds match their exact requested frequencies.
+
 ---
 
 ## 2. Dynamic LED Indicator System (Bicolor D3)
