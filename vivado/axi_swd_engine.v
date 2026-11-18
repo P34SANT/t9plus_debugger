@@ -22,33 +22,34 @@ module axi_swd_engine #(
     input  wire [C_S_AXI_ADDR_WIDTH-1:0]     s_axi_awaddr,
     input  wire [2:0]                        s_axi_awprot,
     input  wire                              s_axi_awvalid,
-    output reg                               s_axi_awready,
+    output wire                              s_axi_awready,
 
     // AXI4-Lite Write Data Channel
     input  wire [C_S_AXI_DATA_WIDTH-1:0]     s_axi_wdata,
     input  wire [(C_S_AXI_DATA_WIDTH/8)-1:0] s_axi_wstrb,
     input  wire                              s_axi_wvalid,
-    output reg                               s_axi_wready,
+    output wire                              s_axi_wready,
 
     // AXI4-Lite Write Response Channel
-    output reg  [1:0]                        s_axi_bresp,
-    output reg                               s_axi_bvalid,
+    output wire [1:0]                        s_axi_bresp,
+    output wire                              s_axi_bvalid,
     input  wire                              s_axi_bready,
 
     // AXI4-Lite Read Address Channel
     input  wire [C_S_AXI_ADDR_WIDTH-1:0]     s_axi_araddr,
     input  wire [2:0]                        s_axi_arprot,
     input  wire                              s_axi_arvalid,
-    output reg                               s_axi_arready,
+    output wire                              s_axi_arready,
 
     // AXI4-Lite Read Data Channel
-    output reg  [C_S_AXI_DATA_WIDTH-1:0]     s_axi_rdata,
-    output reg  [1:0]                        s_axi_rresp,
-    output reg                               s_axi_rvalid,
+    output wire [C_S_AXI_DATA_WIDTH-1:0]     s_axi_rdata,
+    output wire [1:0]                        s_axi_rresp,
+    output wire                              s_axi_rvalid,
     input  wire                              s_axi_rready,
 
     // Physical SWD Interface to Top-Level IOBUFs
     output wire                              swd_hw_en,
+    output wire                              swd_released,
     output reg                               swclk_o,
     output reg                               swdio_o,
     output reg                               swdio_t, // 1 = Input (tristate), 0 = Output
@@ -78,23 +79,45 @@ module axi_swd_engine #(
     reg [2:0]  target_ack;
     reg        parity_err;
     reg        sticky_done;
+    reg [31:0] completed;
 
     assign swd_hw_en = reg_ctrl[15]; // Bit 15 enables hardware multiplexer
+    assign swd_released = reg_ctrl[17];
 
     // =========================================================================
     // AXI4-Lite Slave Logic
     // =========================================================================
     reg fsm_start_pulse;
-    reg aw_en;
+    wire wr_en, rd_en;
+    wire [C_S_AXI_ADDR_WIDTH-1:0] wr_addr, rd_addr;
+    wire [31:0] wr_data;
+    wire [3:0] wr_strb;
+    reg [31:0] read_data;
+    reg read_valid;
+    axil_register_slave #(.ADDR_WIDTH(C_S_AXI_ADDR_WIDTH)) bus (
+        .clk(s_axi_aclk), .resetn(s_axi_aresetn),
+        .awaddr(s_axi_awaddr), .awvalid(s_axi_awvalid), .awready(s_axi_awready),
+        .wdata(s_axi_wdata), .wstrb(s_axi_wstrb), .wvalid(s_axi_wvalid), .wready(s_axi_wready),
+        .bresp(s_axi_bresp), .bvalid(s_axi_bvalid), .bready(s_axi_bready),
+        .araddr(s_axi_araddr), .arvalid(s_axi_arvalid), .arready(s_axi_arready),
+        .rdata(s_axi_rdata), .rresp(s_axi_rresp), .rvalid(s_axi_rvalid), .rready(s_axi_rready),
+        .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data), .wr_strb(wr_strb),
+        .rd_en(rd_en), .rd_addr(rd_addr), .rd_data(read_data), .rd_valid(read_valid)
+    );
+    function [31:0] merge_bytes;
+        input [31:0] old_value, new_value;
+        input [3:0] strobe;
+        integer i;
+        begin
+            merge_bytes = old_value;
+            for (i = 0; i < 4; i = i + 1)
+                if (strobe[i]) merge_bytes[i*8 +: 8] = new_value[i*8 +: 8];
+        end
+    endfunction
 
     always @(posedge s_axi_aclk) begin
         if (!s_axi_aresetn) begin
-            s_axi_awready   <= 1'b0;
-            s_axi_wready    <= 1'b0;
-            s_axi_bvalid    <= 1'b0;
-            s_axi_bresp     <= 2'b00;
-            aw_en           <= 1'b1;
-            reg_ctrl        <= 32'h00000800; // Idle cycles = 8, HW_EN = 0
+            reg_ctrl        <= 32'h00020800; // Released, idle cycles = 8
             reg_clk_div     <= 16'd49;       // Default: 1.0 MHz (100MHz / (2 * 50))
             reg_wdata       <= 32'd0;
             reg_raw_len     <= 6'd32;
@@ -102,37 +125,21 @@ module axi_swd_engine #(
         end else begin
             fsm_start_pulse <= 1'b0; // Default 1-cycle strobe
 
-            // Write Address Ready Handshake
-            if (~s_axi_awready && s_axi_awvalid && s_axi_wvalid && aw_en) begin
-                s_axi_awready <= 1'b1;
-                s_axi_wready  <= 1'b1;
-                aw_en         <= 1'b0;
-
-                // Write Register Decoding
-                case (s_axi_awaddr[5:0])
+            if (wr_en) begin
+                case (wr_addr[5:0])
                     ADDR_CTRL: begin
-                        reg_ctrl <= s_axi_wdata;
-                        if (s_axi_wdata[0] && !fsm_busy) begin
+                        if (!fsm_busy || (wr_strb[2] && wr_data[17]))
+                            reg_ctrl <= merge_bytes(reg_ctrl, wr_data, wr_strb);
+                        if (wr_strb[0] && wr_data[0] && !fsm_busy) begin
                             fsm_start_pulse <= 1'b1;
                         end
                     end
-                    ADDR_CLK_DIV: reg_clk_div <= s_axi_wdata[15:0];
-                    ADDR_WDATA:   reg_wdata   <= s_axi_wdata;
-                    ADDR_RAW_LEN: reg_raw_len <= s_axi_wdata[5:0];
+                    ADDR_CLK_DIV: if (!fsm_busy) reg_clk_div <= merge_bytes({16'd0,reg_clk_div}, wr_data, wr_strb);
+                    ADDR_WDATA: if (!fsm_busy) reg_wdata <= merge_bytes(reg_wdata, wr_data, wr_strb);
+                    ADDR_RAW_LEN: if (!fsm_busy && wr_strb[0] && wr_data[5:0] >= 1 && wr_data[5:0] <= 32)
+                                      reg_raw_len <= wr_data[5:0];
                     default: ;
                 endcase
-            end else begin
-                s_axi_awready <= 1'b0;
-                s_axi_wready  <= 1'b0;
-            end
-
-            // Write Response
-            if (s_axi_awready && s_axi_wready) begin
-                s_axi_bvalid <= 1'b1;
-                s_axi_bresp  <= 2'b00;
-            end else if (s_axi_bready && s_axi_bvalid) begin
-                s_axi_bvalid <= 1'b0;
-                aw_en        <= 1'b1;
             end
 
             // Clear START bit in reg_ctrl automatically when FSM finishes
@@ -145,29 +152,22 @@ module axi_swd_engine #(
     // AXI Read Channel
     always @(posedge s_axi_aclk) begin
         if (!s_axi_aresetn) begin
-            s_axi_arready <= 1'b0;
-            s_axi_rvalid  <= 1'b0;
-            s_axi_rresp   <= 2'b00;
-            s_axi_rdata   <= 32'd0;
+            read_valid <= 0;
+            read_data <= 0;
         end else begin
-            if (~s_axi_arready && s_axi_arvalid) begin
-                s_axi_arready <= 1'b1;
-                s_axi_rvalid  <= 1'b1;
-                s_axi_rresp   <= 2'b00;
-
-                case (s_axi_araddr[5:0])
-                    ADDR_CTRL:    s_axi_rdata <= reg_ctrl;
-                    ADDR_CLK_DIV: s_axi_rdata <= {16'd0, reg_clk_div};
-                    ADDR_WDATA:   s_axi_rdata <= reg_wdata;
-                    ADDR_RDATA:   s_axi_rdata <= reg_rdata;
-                    ADDR_STATUS:  s_axi_rdata <= {16'h5357, 10'd0, sticky_done, parity_err, target_ack, fsm_busy};
-                    ADDR_RAW_LEN: s_axi_rdata <= {26'd0, reg_raw_len};
-                    ADDR_ID:      s_axi_rdata <= 32'h53574401; // "SWD1"
-                    default:      s_axi_rdata <= 32'd0;
+            read_valid <= rd_en;
+            if (rd_en) begin
+                case (rd_addr[5:0])
+                    ADDR_CTRL:    read_data <= reg_ctrl;
+                    ADDR_CLK_DIV: read_data <= {16'd0, reg_clk_div};
+                    ADDR_WDATA:   read_data <= reg_wdata;
+                    ADDR_RDATA:   read_data <= reg_rdata;
+                    ADDR_STATUS:  read_data <= {16'h5357, 10'd0, sticky_done, parity_err, target_ack, fsm_busy};
+                    ADDR_RAW_LEN: read_data <= {26'd0, reg_raw_len};
+                    ADDR_ID:      read_data <= 32'h53574402;
+                    6'h1C:        read_data <= completed;
+                    default:      read_data <= 32'd0;
                 endcase
-            end else if (s_axi_rvalid && s_axi_rready) begin
-                s_axi_rvalid  <= 1'b0;
-                s_axi_arready <= 1'b0;
             end
         end
     end
@@ -210,12 +210,15 @@ module axi_swd_engine #(
     reg [4:0]  idle_cnt;
     reg        phase; // 0 = SWCLK LOW phase, 1 = SWCLK HIGH phase
     reg        sample_parity;
+    reg [2:0] turn_count;
 
     wire apndp     = reg_ctrl[1];
     wire rnw       = reg_ctrl[2];
     wire [1:0] a23 = reg_ctrl[4:3];
     wire hdr_par   = apndp ^ rnw ^ a23[0] ^ a23[1]; // Even parity of request fields
-    wire [4:0] cfg_idle = (reg_ctrl[12:8] == 5'd0) ? 5'd8 : reg_ctrl[12:8];
+    wire [4:0] cfg_idle = reg_ctrl[12:8];
+    wire [2:0] cfg_turnaround = {1'b0, reg_ctrl[19:18]} + 1;
+    wire cfg_data_phase = reg_ctrl[20];
 
     always @(posedge s_axi_aclk) begin
         if (!s_axi_aresetn) begin
@@ -234,6 +237,8 @@ module axi_swd_engine #(
             shift_reg     <= 32'd0;
             reg_rdata     <= 32'd0;
             sample_parity <= 1'b0;
+            turn_count <= 0;
+            completed <= 0;
         end else begin
             case (state)
                 ST_IDLE: begin
@@ -248,6 +253,7 @@ module axi_swd_engine #(
                         sticky_done <= 1'b0;
                         parity_err  <= 1'b0;
                         target_ack  <= 3'b111; // Default to timeout
+                        turn_count <= 0;
 
                         if (reg_ctrl[14]) begin
                             // Raw Mode
@@ -302,8 +308,9 @@ module axi_swd_engine #(
                         end else begin
                             swclk_o <= 1'b1; // Rising edge: Target assumes control
                             phase   <= 1'b0;
-                            state   <= ST_ACK;
-                            bit_idx <= 6'd0;
+                            if (turn_count + 1 >= cfg_turnaround) begin
+                                state <= ST_ACK; bit_idx <= 0; turn_count <= 0;
+                            end else turn_count <= turn_count + 1;
                         end
                     end
                 end
@@ -338,8 +345,10 @@ module axi_swd_engine #(
                                         shift_reg <= reg_wdata;
                                     end
                                 end else begin
-                                    // ACK is WAIT, FAULT, or timeout: abort to turnaround & idle cycles
-                                    state    <= ST_TRN_READ_END;
+                                    if (cfg_data_phase && (target_ack == 2 || target_ack == 4)) begin
+                                        if (rnw) state <= ST_RDATA; /* discard invalid data */
+                                        else begin state <= ST_TRN2; shift_reg <= 0; end
+                                    end else state <= ST_TRN_READ_END;
                                     idle_cnt <= 5'd0;
                                 end
                             end else begin
@@ -395,8 +404,9 @@ module axi_swd_engine #(
                         end else begin
                             swclk_o  <= 1'b1; // Target releases bus
                             phase    <= 1'b0;
-                            state    <= ST_IDLE_CYCLES;
-                            idle_cnt <= 5'd0;
+                            if (turn_count + 1 >= cfg_turnaround) begin
+                                state <= ST_IDLE_CYCLES; idle_cnt <= 0; turn_count <= 0;
+                            end else turn_count <= turn_count + 1;
                         end
                     end
                 end
@@ -413,8 +423,9 @@ module axi_swd_engine #(
                         end else begin
                             swclk_o <= 1'b1; // Target releases bus
                             phase   <= 1'b0;
-                            state   <= ST_WDATA;
-                            bit_idx <= 6'd0;
+                            if (turn_count + 1 >= cfg_turnaround) begin
+                                state <= ST_WDATA; bit_idx <= 0; turn_count <= 0;
+                            end else turn_count <= turn_count + 1;
                         end
                     end
                 end
@@ -451,7 +462,11 @@ module axi_swd_engine #(
                 // Phase 5: Configurable Idle Clock Cycles (SWDIO = 0)
                 // -------------------------------------------------------------
                 ST_IDLE_CYCLES: begin
-                    if (tick) begin
+                    if (cfg_idle == 0) begin
+                        swdio_o <= 0; swdio_t <= 0;
+                        state <= ST_IDLE; fsm_busy <= 0; sticky_done <= 1;
+                        completed <= completed + 1;
+                    end else if (tick) begin
                         if (!phase) begin
                             swclk_o <= 1'b0;
                             swdio_t <= 1'b0;
@@ -466,6 +481,7 @@ module axi_swd_engine #(
                                 state       <= ST_IDLE;
                                 fsm_busy    <= 1'b0;
                                 sticky_done <= 1'b1;
+                                completed <= completed + 1;
                             end else begin
                                 idle_cnt <= idle_cnt + 1'b1;
                             end
@@ -499,6 +515,7 @@ module axi_swd_engine #(
                                 state       <= ST_IDLE;
                                 fsm_busy    <= 1'b0;
                                 sticky_done <= 1'b1;
+                                completed <= completed + 1;
                             end else begin
                                 bit_idx <= bit_idx + 1'b1;
                             end

@@ -1,0 +1,16 @@
+/*
+ * Include in a BOARD-VERIFIED device tree, not as an automatically loaded overlay.
+ * Verify clkc/intc labels and that FCLK0 (clock ID 15) is 100 MHz on the board.
+ * IRQ_F2P[0] maps to GIC SPI 29 (hardware interrupt ID 61).
+ */
+&amba {
+    plink_uart1: serial@42c00000 {
+        compatible = "xlnx,xps-uartlite-1.00.a";
+        reg = <0x42c00000 0x10000>;
+        clocks = <&clkc 15>;
+        interrupt-parent = <&intc>;
+        interrupts = <0 29 4>;
+        current-speed = <115200>;
+        status = "okay";
+    };
+};

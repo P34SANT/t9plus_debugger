@@ -1,67 +1,56 @@
-# Antminer T9+ Debugger & Programmer - Bug Audit & Resolution Report
+# Plink hardening audit
 
-## 1. Summary of All Identified and Fixed Bugs
+Implementation status is not live qualification. ABI 2 has not been deployed
+or exercised on a target during this hardening pass.
 
-### Bug 1: TCP Stream Desynchronization on Bulk OUT Packet Oversize
-- **File:** `t9_programmer/usbip_dap/usbip_server.c`
-- **Issue:** When a host submitted an EP1 OUT transfer with `transfer_buffer_length > DAP_MAX_PACKET` (e.g. 1024 bytes), the server only read 512 bytes, leaving remaining bytes in the TCP socket. On the next loop iteration, `cmd_code` was read from stale payload data, destroying framing.
-- **Resolution:** Added socket draining for any excess payload bytes (`rlen > to_read`), keeping the TCP stream in exact alignment.
+## Addressed in source
 
-### Bug 2: USB/IP Bulk IN URB Buffer Overrun
-- **File:** `t9_programmer/usbip_dap/usbip_server.c`
-- **Issue:** Returning `actual_length = dap_resp_len` when the host's IN URB allocated a smaller buffer (`cmd.transfer_buffer_length`) triggered a kernel `STATUS_BUFFER_OVERFLOW` / `-EOVERFLOW` error.
-- **Resolution:** Clamped all IN completions (both direct and queued) with:
-  `uint32_t tx_len = (dap_resp_len > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : dap_resp_len;`
+| Defect | Correction / regression evidence |
+|---|---|
+| USB/IP unlink double completion | Cancelled pending SUBMIT is removed; only RET_UNLINK is returned. Socketpair test checks no second response. |
+| Duplicate pod ownership | Exclusive per-pod advisory locks, shared by C server and Python controls/flash workers. |
+| CDC short-read truncation | Per-channel bounded RX rings preserve unread bytes. |
+| Partial serial/TCP write loss | Retain unsent TCP bytes; loop through partial TTY writes with deadlines. |
+| Unbounded client buffering | Slow clients close at a bounded threshold; MMIO delivery callbacks are coalesced and buffered up to 64 KiB. |
+| DAP reply overwrite | Eight bounded reply slots; endpoint-specific pending reads. |
+| Malformed DAP writes causing target effects | Whole-command validation before dispatch, including transfer counts and payload lengths. |
+| Invalid/zero SWO baud | Reject before divisor arithmetic; use 32-bit SWO capacity/status fields. |
+| Unstable AXI responses / coupled AW and W | Shared AXI-Lite register slave retains separate address/data and stalled responses. |
+| SWO overflow/full push-pop accounting | Synchronous banked FIFO, packed pops and explicit drop/high-water/framing counters. |
+| SWO draining blocked by SWD work | Independent software capture worker and 1 MiB ring. |
+| Ineffective SWD disconnect | Release control overrides FPGA drive; SWCLK and SWDIO are tri-stated at top level. |
+| Pod 2 GPIO-only backend | Shared FPGA SWD backend at `0x43C10000`; propagate memory-access errors and handle 1 KiB TAR boundaries. |
+| Pod 2 parser/alignment issues | Validate bounds, read little-endian values without unaligned casts, retain atomic short responses. Legacy standalone server disabled. |
+| Clock changed by running UART bridge | Clock setup/readback confined to approved verified loader with clients stopped. |
+| Unauthenticated web writes | Bearer token, same-origin checks, size/time limits and fail-closed control responses. |
+| Corrupted multipart firmware | MIME parsing preserves binary tails; unique uploads confined to the upload directory. |
+| SSE whitespace loss / resource leaks | JSON-framed events, incremental UTF-8 decode, explicit UART channel and socket cleanup. |
+| Unsafe T10 reuse | Input by default; BOOT0 writes blocked unless explicitly reconfigured after rewiring. |
+| Reset high drive / failure cleanup | Assert using atomic low direction; release to input in a finally block. |
+| Misleading dashboard states | Actual snapshots and freshness checks; failed GPIO reads report unknown rather than low. |
+| Mismatched deployed artifacts | Matched release manifest, source and artifact verification, immutable release paths and readiness marker. |
+| Shutdown or programming command hangs | Cooperative server termination releases sessions/pins; flasher subprocess groups have a five-minute deadline and bounded log reads. |
+| Top-level SWCLK IOBUF invalid feedback | Route EMIO feedback from the IOBUF O pin rather than adding fabric loads to the external IO pad. |
+| Tray reconnect/hub-reset hazards | Serialized attach/detach, exact-device matching, bounded commands, singleton; no routine hub restart/taskkill. |
 
-### Bug 3: `dap_transfer_block` Buffer Limit Silent Dropping & Zero-Filling
-- **File:** `t9_programmer/usbip_dap/DAP.c`
-- **Issue:** The read and write loops in `dap_transfer_block` lacked `!dap_buf_error` and `!dap_abort` guards. Read operations exceeding packet size dropped words while reporting a false `resp_count`. Truncated write requests continued looping and wrote zeros to target memory.
-- **Resolution:** Added buffer boundary guards to both read and write loops in `dap_transfer_block`, breaking immediately and returning `DAP_TRANSFER_ERROR` on overflow/underflow.
+## Still open / not established
 
-### Bug 4: Unbounded Infinite `while` Polling Loops
-- **File:** `t9_programmer/usbip_dap/DAP.c`
-- **Issue:** Hardware SWD polling loops in `dap_swj_sequence` and `dap_swd_sequence` polled `(status & 1)` without a timeout, causing infinite 100% CPU lockup if the FPGA clock stopped or bus glitched.
-- **Resolution:** Replaced all unbounded `while` loops with bounded timeout iterations (`100,000` cycles).
-
-### Bug 5: Omitted Timeout Check in `dap_swd_operation`
-- **File:** `t9_programmer/usbip_dap/DAP.c`
-- **Issue:** If the hardware FSM failed to complete within 100,000 cycles, the code did not check `(st & 1)` and interpreted in-flight bits as valid ACK.
-- **Resolution:** Added `if (st & 1) return DAP_TRANSFER_ERROR;`.
-
-### Bug 6: FPGA RTL Arithmetic Underflow on `cfg_idle == 0`
-- **File:** `vivado/axi_swd_engine.v`
-- **Issue:** `cfg_idle - 1'b1` underflowed from 0 to 31 in 5-bit arithmetic, executing 32 idle cycles instead of 0.
-- **Resolution:** Added guard: `if (cfg_idle == 5'd0 || idle_cnt >= (cfg_idle - 1'b1))`.
-
-### Bug 7: FPGA RTL Arithmetic Underflow on `reg_raw_len == 0`
-- **File:** `vivado/axi_swd_engine.v`
-- **Issue:** `reg_raw_len - 1'b1` underflowed from 0 to 63 in 6-bit arithmetic, executing 64 raw cycles instead of 0.
-- **Resolution:** Added guard: `if (reg_raw_len == 6'd0 || bit_idx >= (reg_raw_len - 1'b1))`.
-
-### Bug 8: AXI UARTLite Bridge Unconditional Write on Full FIFO
-- **File:** `t9_programmer/uart_bridge/uart_bridge.py`
-- **Issue:** If the Tx FIFO remained full after 1000 poll cycles, `write_tx()` unconditionally wrote to register `0x04`, corrupting or dropping characters.
-- **Resolution:** Added full-flag verification; characters are only written when FIFO space is confirmed.
-
-### Bug 9: PL Fabric Clock (`FCLK_CLK0`) Half-Clocking at 50 MHz Due to Factory FSBL
-- **Files:** `scripts/t9_load_bit.py`, `t9_programmer/uart_bridge/uart_bridge.py`
-- **Issue:** The factory Bitmain Antminer T9+ FSBL (`BOOT.BIN`) initialized Zynq SLCR `FPGA0_CLK_CTRL` (address `0xF8000170`) to `0x00101400` (`Divisor0 = 20`, yielding `1000 MHz / 20 = 50.0 MHz`). However, the Vivado bitstream synthesized `axi_uartlite_0` and the hardware SWD engines expecting `100.0 MHz` (`C_S_AXI_ACLK_FREQ_HZ = 100000000`). Because `axi_uartlite` uses a compile-time fixed clock divider (`100,000,000 / (16 * 115200) = 54`), feeding it a 50 MHz clock halved the actual baud rate to `50,000,000 / (16 * 54) = 57,870 baud` (~57,600 baud). In contrast, PS UART (`/dev/ttyPS1`) worked at 115200 because the Linux `xuartps` driver dynamically computed dividers based on its own PS peripheral clock (`UART_CLK_CTRL = 50 MHz`).
-- **Resolution:** Added SLCR unlock and register configuration in `scripts/t9_load_bit.py` and `uart_bridge.py` to set `FPGA0_CLK_CTRL` to `0x00100A00` (`Divisor0 = 10`, yielding exactly `100.000 MHz`). AXI UART1 on J3 Pins 11/12 now runs at exact 115,200 baud, and hardware SWD clock speeds match their exact requested frequencies.
-
----
-
-## 2. Dynamic LED Indicator System (Bicolor D3)
-
-- **Target Header D3 LEDs:**
-  - Red: PS MIO 37 (`Bank 1, bit 5`)
-  - Green: PS MIO 38 (`Bank 1, bit 6`)
-- **Visual Modes:**
-  1. **Flash Programming Mode:**
-     - Triggered automatically by bulk write transfers (`ID_DAP_TRANSFER_BLOCK` write with count > 4).
-     - **Behavior:** Blinks **GREEN ONLY** (fast 60ms toggle). Red LED stays completely OFF.
-  2. **Interactive Debugging Mode:**
-     - Triggered by register reads/writes, stepping, breakpoints, and core polling.
-     - **Behavior:** Blinks **BOTH ALTERNATING (ping-pong)**: Green ON / Red OFF <-> Green OFF / Red ON (80ms cycle). They are **never on at the same time**.
-  3. **Idle Mode:**
-     - Triggered when no bus activity is received for > 100ms or when disconnected.
-     - **Behavior:** Both Green and Red turn OFF completely.
+- **Windows BSOD root cause:** bugcheck `0x0000000A` on 2026-11-18. No driver
+  attribution has been established. Transport fixes do not prove it resolved.
+- **Sustained-load qualification:** simultaneous SWD, SWO and dual CDC,
+  disconnect/reconnect, slow-host and long-running tests still need approval.
+- **UARTLite IRQ mode:** block-design IRQ wiring and an example device-tree
+  include exist. Board Linux/device-tree integration remains unverified.
+  MMIO polling fallback is not sustained-throughput qualified.
+- **External SWD timing:** real target and cable timing data are required.
+  No invented I/O constraints or blanket warning suppression are used.
+- **Trace data loss:** counters make loss visible, not impossible. Unflowcontrolled
+  UART/SWO inputs cannot backpressure a target; slow clients may be disconnected.
+- **End-to-end delivery:** TCP acceptance and CDC OUT completion indicate queue
+  acceptance, not proof that a target consumed or executed the data.
+- **Target compatibility:** only documented historical STM32F407 observations
+  are evidence. Broad MCU family support, multidrop and ST-Link compatibility
+  are not qualified merely because an interface is advertised.
+- **Future architecture:** command FIFOs, DMA, timestamped flight recorder,
+  production programming and direct remote GDB integration are not implemented
+  by this work.

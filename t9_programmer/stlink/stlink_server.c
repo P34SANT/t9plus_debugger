@@ -520,6 +520,8 @@ static void handle_client(int client_fd) {
 }
 
 int main(void) {
+    fprintf(stderr, "Legacy standalone ST-Link server is disabled. Use usbip_dap/t9-cmsis-dap for locked, validated pod ownership.\n");
+    return 2;
     setlinebuf(stdout);
     setlinebuf(stderr);
     signal(SIGPIPE, SIG_IGN);

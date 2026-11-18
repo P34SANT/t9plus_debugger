@@ -6,3 +6,5 @@ build_programmer/
 .Xil/
 __pycache__/
 *.pyc
+releases/
+build_source_snapshot.json

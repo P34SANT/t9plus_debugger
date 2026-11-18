@@ -7,6 +7,8 @@ import sys
 import json
 import urllib.request
 import urllib.parse
+import os
+from pathlib import Path
 
 API_BASE = "http://127.0.0.1:8080/api"
 
@@ -16,11 +18,14 @@ def api_get(endpoint):
         return json.loads(res.read().decode('utf-8'))
 
 def api_post(endpoint, data=None):
+    token = os.environ.get("PLINK_API_TOKEN")
+    if not token:
+        token = Path(os.environ.get("PLINK_API_TOKEN_FILE", "/etc/plink/api.token")).read_text().strip()
     payload = json.dumps(data).encode('utf-8') if data else b"{}"
     req = urllib.request.Request(
         f"{API_BASE}{endpoint}",
         data=payload,
-        headers={'Content-Type': 'application/json'}
+        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}
     )
     with urllib.request.urlopen(req, timeout=5) as res:
         return json.loads(res.read().decode('utf-8'))
@@ -32,7 +37,7 @@ def cmd_list():
     print("="*85)
     for k, p in pins.items():
         loc = f"{p['header']} Pin {p['pin_num']}"
-        val_str = "HIGH (1)" if p['current_val'] == 1 else "LOW  (0)"
+        val_str = "UNKNOWN" if p['current_val'] is None else ("HIGH (1)" if p['current_val'] == 1 else "LOW  (0)")
         print(f" {k:<12} {loc:<12} {p['fpga_pin']:<8} {p.get('alias',''):<14} {p.get('role',''):<16} {p.get('direction','').upper():<5} {val_str}")
     print("="*85 + "\n")
 

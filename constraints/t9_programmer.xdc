@@ -25,6 +25,11 @@ set_property PACKAGE_PIN T14 [get_ports {j3_nrst}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_nrst}]
 set_property PULLUP true [get_ports {j3_nrst}]
 
+# Pin 6: SWO0 / BOOT0 (Target 1 SWO Trace Input / STM32 BOOT0)
+set_property PACKAGE_PIN T10 [get_ports {j3_swo}]
+set_property IOSTANDARD LVCMOS33 [get_ports {j3_swo}]
+set_property PULLUP true [get_ports {j3_swo}]
+
 # Pin 7: Primary Target UART0 TX (Output to Target RX)
 set_property PACKAGE_PIN C20 [get_ports {j3_uart0_tx}]
 set_property IOSTANDARD LVCMOS33 [get_ports {j3_uart0_tx}]
@@ -119,6 +124,4 @@ set_property IOSTANDARD LVCMOS33 [get_ports {led_d8}]
 # Bitstream Generation Options
 ##############################################################################
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
-set_property BITSTREAM.CONFIG.CONFIGRATE 50 [current_design]
-set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]
-set_property CONFIG_MODE SPIx4 [current_design]
+# Zynq PL is configured by PS PCAP, not standalone FPGA SPI configuration.

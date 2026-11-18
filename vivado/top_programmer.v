@@ -30,9 +30,10 @@ module top_programmer (
     inout  wire        FIXED_IO_0_ps_srstb,
 
     // J3 Header: STM32 SWD & Primary UART Interface (3.3V Bank 34/35)
-    output wire        j3_swclk,       // J3 Pin 3  (P16) - STM32 SWCLK
+    inout wire         j3_swclk,       // J3 Pin 3 (P16), tri-stated on disconnect
     inout  wire        j3_swdio,       // J3 Pin 4  (P15) - STM32 SWDIO
     inout  wire        j3_nrst,        // J3 Pin 5  (T14) - STM32 nRST (Reset)
+    inout  wire        j3_swo,         // J3 Pin 6  (T10) - Target 1 SWO Trace Input / BOOT0
     output wire        j3_uart0_tx,    // J3 Pin 7  (C20) - Primary UART TX (To STM32 RX)
     input  wire        j3_uart0_rx,    // J3 Pin 8  (B20) - Primary UART RX (From STM32 TX)
 
@@ -48,7 +49,7 @@ module top_programmer (
     inout  wire        j3_target_io4,  // J3 Pin 22 (M15)
 
     // J4 Header: Pod #2 (ST-LINK/V2) SWD & Target Interface (3.3V Bank 34/35)
-    output wire        j4_swclk,       // J4 Pin 3  (V18) - Target 2 SWCLK
+    inout wire         j4_swclk,       // J4 Pin 3 (V18), tri-stated on disconnect
     inout  wire        j4_swdio,       // J4 Pin 4  (V17) - Target 2 SWDIO
     inout  wire        j4_nrst,        // J4 Pin 5  (Y16) - Target 2 nRST (Reset)
     input  wire        j4_swo,         // J4 Pin 6  (T16) - Target 2 SWO Trace Input
@@ -108,16 +109,21 @@ module top_programmer (
         .pl_uart1_rx(pl_uart1_rx_int),
 
         .swd_hw_en_0(swd_hw_en_0),
+        .swd_released_0(swd_released_0),
         .hw_swclk_o_0(hw_swclk_o_0),
         .hw_swdio_o_0(hw_swdio_o_0),
         .hw_swdio_t_0(hw_swdio_t_0),
         .hw_swdio_i_0(hw_swdio_i_0),
 
         .swd_hw_en_1(swd_hw_en_1),
+        .swd_released_1(swd_released_1),
         .hw_swclk_o_1(hw_swclk_o_1),
         .hw_swdio_o_1(hw_swdio_o_1),
         .hw_swdio_t_1(hw_swdio_t_1),
-        .hw_swdio_i_1(hw_swdio_i_1)
+        .hw_swdio_i_1(hw_swdio_i_1),
+
+        .swo_in_0(pin_j3_swo_i),
+        .swo_in_1(j4_swo)
     );
 
     // =========================================================================
@@ -125,23 +131,28 @@ module top_programmer (
     // J3 Pin 3 (P16): SWCLK0
     // J3 Pin 4 (P15): SWDIO0 (Bidirectional IOBUF)
     // J3 Pin 5 (T14): nRST0  (Bidirectional Open-Drain IOBUF)
+    // J3 Pin 6 (T10): SWO0 / BOOT0 (Bidirectional IOBUF)
     // =========================================================================
     wire swd_hw_en_0;
+    wire swd_released_0;
     wire hw_swclk_o_0;
     wire hw_swdio_o_0;
     wire hw_swdio_t_0;
     wire hw_swdio_i_0;
     wire pin_swdio_i_0;
+    wire pin_j3_swo_i;
 
     assign hw_swdio_i_0   = pin_swdio_i_0;
-    assign j3_swclk       = swd_hw_en_0 ? hw_swclk_o_0 : emio_gpio_o[0];
-    assign emio_gpio_i[0] = j3_swclk;
+    IOBUF iobuf_swclk_0 (
+        .IO(j3_swclk), .O(emio_gpio_i[0]), .I(swd_hw_en_0 ? hw_swclk_o_0 : emio_gpio_o[0]),
+        .T(swd_hw_en_0 ? swd_released_0 : emio_gpio_t[0])
+    );
 
     IOBUF iobuf_swdio_0 (
         .IO(j3_swdio),
         .O (pin_swdio_i_0),
         .I (swd_hw_en_0 ? hw_swdio_o_0 : emio_gpio_o[1]),
-        .T (swd_hw_en_0 ? hw_swdio_t_0 : emio_gpio_t[1])
+        .T (swd_hw_en_0 ? (swd_released_0 | hw_swdio_t_0) : emio_gpio_t[1])
     );
     assign emio_gpio_i[1] = pin_swdio_i_0;
 
@@ -152,7 +163,13 @@ module top_programmer (
         .T (emio_gpio_t[2])
     );
 
-    assign emio_gpio_i[3] = 1'b0; // BOOT0
+    IOBUF iobuf_j3_pin6 (
+        .IO(j3_swo),
+        .O (pin_j3_swo_i),
+        .I (emio_gpio_o[3]),
+        .T (emio_gpio_t[3])
+    );
+    assign emio_gpio_i[3] = pin_j3_swo_i;
 
     // =========================================================================
     // Target Pod #2 SWD Interface (Header J4):
@@ -161,6 +178,7 @@ module top_programmer (
     // J4 Pin 5 (Y16): nRST1  (Bidirectional Open-Drain IOBUF)
     // =========================================================================
     wire swd_hw_en_1;
+    wire swd_released_1;
     wire hw_swclk_o_1;
     wire hw_swdio_o_1;
     wire hw_swdio_t_1;
@@ -168,14 +186,16 @@ module top_programmer (
     wire pin_swdio_i_1;
 
     assign hw_swdio_i_1   = pin_swdio_i_1;
-    assign j4_swclk       = swd_hw_en_1 ? hw_swclk_o_1 : emio_gpio_o[9];
-    assign emio_gpio_i[9] = j4_swclk;
+    IOBUF iobuf_swclk_1 (
+        .IO(j4_swclk), .O(emio_gpio_i[9]), .I(swd_hw_en_1 ? hw_swclk_o_1 : emio_gpio_o[9]),
+        .T(swd_hw_en_1 ? swd_released_1 : emio_gpio_t[9])
+    );
 
     IOBUF iobuf_swdio_1 (
         .IO(j4_swdio),
         .O (pin_swdio_i_1),
         .I (swd_hw_en_1 ? hw_swdio_o_1 : emio_gpio_o[10]),
-        .T (swd_hw_en_1 ? hw_swdio_t_1 : emio_gpio_t[10])
+        .T (swd_hw_en_1 ? (swd_released_1 | hw_swdio_t_1) : emio_gpio_t[10])
     );
     assign emio_gpio_i[10] = pin_swdio_i_1;
 

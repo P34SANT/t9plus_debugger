@@ -1,21 +1,28 @@
-# deploy_to_board.ps1 - Transfer and deploy T9+ programmer suite to the board
-$BoardIP = "192.168.2.99"
-$User = "xilinx"
-
-Write-Host "==> Checking connection to Antminer T9+ at $BoardIP..."
-if (-not (Test-Connection -ComputerName $BoardIP -Count 1 -Quiet)) {
-    Write-Error "Board at $BoardIP is not reachable!"
-    exit 1
+param(
+    [Parameter(Mandatory=$true)][string]$ReleasePath,
+    [string]$BoardIP = "192.168.2.99",
+    [string]$User = "xilinx",
+    [switch]$AllowLiveHardware
+)
+$ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
+$release = (Resolve-Path $ReleasePath).Path
+python "$root\scripts\release_manifest.py" verify --root "$root" --output "$release"
+if ($LASTEXITCODE -ne 0) { throw "Release verification failed; nothing deployed." }
+if (-not $AllowLiveHardware) {
+    Write-Host "Release verified offline. Deployment requires -AllowLiveHardware."
+    exit 0
 }
-
-Write-Host "==> Creating staging directory on $BoardIP..."
-ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "mkdir -p ~/staging"
-
-Write-Host "==> Copying project files to $BoardIP..."
-scp -o StrictHostKeyChecking=no -r t9_programmer_pcap.bin t9_programmer.bit t9_programmer.hwh scripts t9_programmer "${User}@${BoardIP}:~/staging/"
-
-Write-Host "==> Executing deployment on $BoardIP..."
-ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "cd ~/staging && echo xilinx | sudo -S bash t9_programmer/deploy.sh"
-
-Write-Host "`n==> Verifying running services on $BoardIP..."
-ssh -o StrictHostKeyChecking=no "${User}@${BoardIP}" "systemctl status t9-fpga t9-cmsis-dap t9-uart-bridge t9-io-daemon --no-pager"
+$id = (Get-FileHash "$release\manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0,16)
+$stage = "/home/$User/staging/plink-$id"
+ssh "${User}@${BoardIP}" "mkdir -p '$stage/release'"
+if ($LASTEXITCODE -ne 0) { throw "SSH staging failed" }
+scp "$release\manifest.json" "$release\t9_programmer.bit" "$release\t9_programmer.hwh" "$release\t9_programmer_pcap.bin" "${User}@${BoardIP}:$stage/release/"
+if ($LASTEXITCODE -ne 0) { throw "Artifact upload failed" }
+foreach ($directory in @("scripts", "t9_programmer", "vivado", "constraints", "plink-tray", "hardware")) {
+    scp -r "$root\$directory" "${User}@${BoardIP}:$stage/"
+    if ($LASTEXITCODE -ne 0) { throw "Source upload failed: $directory" }
+}
+# Interactive sudo, never a hard-coded password. No USB/IP/hub actions.
+ssh -t "${User}@${BoardIP}" "cd '$stage' && sudo bash t9_programmer/deploy.sh --allow-live-hardware"
+if ($LASTEXITCODE -ne 0) { throw "Deployment failed; inspect board journal before retrying." }

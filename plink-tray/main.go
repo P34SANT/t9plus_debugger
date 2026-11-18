@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -45,6 +49,8 @@ var (
 	pLoadImageW         = user32.NewProc("LoadImageW")
 	pShell_NotifyIconW  = shell32.NewProc("Shell_NotifyIconW")
 	pGetModuleHandleW   = kernel32.NewProc("GetModuleHandleW")
+	pCreateMutexW      = kernel32.NewProc("CreateMutexW")
+	pCloseHandle       = kernel32.NewProc("CloseHandle")
 )
 
 const (
@@ -140,6 +146,7 @@ var (
 	isOnline       bool
 	autoAttach     = true
 	stateMu        sync.Mutex
+	connectionMu   sync.Mutex
 	monitorCancel  chan struct{}
 )
 
@@ -189,12 +196,30 @@ func setTrayState(online bool, attached bool, balloonTitle string, balloonMsg st
 }
 
 func runCmdSilent(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
 	}
-	return cmd.Output()
+	return cmd.CombinedOutput()
+}
+
+func matchingPorts(out []byte) []int {
+	var ports []int
+	port := -1
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Port ") {
+			fields := strings.Fields(line)
+			port, _ = strconv.Atoi(strings.TrimSuffix(fields[1], ":"))
+		}
+		if port >= 0 && strings.TrimSpace(strings.TrimPrefix(line, "->")) == "usbip://"+BOARD_IP+":3240/1-1" {
+			ports = append(ports, port)
+		}
+	}
+	return ports
 }
 
 func isUsbipPortAttached() bool {
@@ -202,28 +227,33 @@ func isUsbipPortAttached() bool {
 	if err != nil {
 		return false
 	}
-	return bytes.Contains(out, []byte(BOARD_IP))
+	return len(matchingPorts(out)) == 1
 }
 
 func detachUsbip() {
-	// 1. Terminate any stuck or duplicate usbip.exe background CLI processes
-	runCmdSilent("taskkill", "/F", "/IM", "usbip.exe")
-	// 2. Cleanly restart the virtual root hub to drop all stale/duplicate attachments without hanging
-	runCmdSilent("pnputil", "/restart-device", "ROOT\\USB\\0000")
-	time.Sleep(400 * time.Millisecond)
+	connectionMu.Lock()
+	defer connectionMu.Unlock()
+	out, err := runCmdSilent(USBIP_PATH, "port")
+	if err != nil { return }
+	for _, port := range matchingPorts(out) {
+		if _, err := runCmdSilent(USBIP_PATH, "detach", "-p", strconv.Itoa(port)); err != nil {
+			return // No retries, hub resets, or unrelated process termination.
+		}
+	}
 }
 
 func attachUsbip() bool {
-	// If already cleanly attached, avoid duplicating
-	if isUsbipPortAttached() {
-		return true
-	}
-
-	// Always remove all existing devices first to prevent duplicates
-	detachUsbip()
+	connectionMu.Lock()
+	defer connectionMu.Unlock()
+	out, err := runCmdSilent(USBIP_PATH, "port")
+	if err != nil { return false }
+	ports := matchingPorts(out)
+	if len(ports) != 0 { return len(ports) == 1 }
 
 	// Attach Pod #1 (CMSIS-DAP + Dual COM) silently in background
-	runCmdSilent(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
+	if _, err := runCmdSilent(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1"); err != nil {
+		return false
+	}
 	return isUsbipPortAttached()
 }
 
@@ -235,8 +265,15 @@ func apiPost(endpoint string) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		token := os.Getenv("PLINK_API_TOKEN")
+		if token == "" {
+			setTrayState(true, isUsbipPortAttached(), "Plink Control", "Set PLINK_API_TOKEN to enable target control.")
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		client := http.Client{Timeout: 2 * time.Second}
-		client.Do(req)
+		resp, err := client.Do(req)
+		if err == nil { resp.Body.Close() }
 	}()
 }
 
@@ -244,19 +281,31 @@ func apiPost(endpoint string) {
 // Does NOT touch port 3240, keeping USB/IP port dedicated.
 func startEventDrivenMonitor() {
 	go func() {
+		client := &http.Client{Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: 3*time.Second, KeepAlive: 30*time.Second}).DialContext,
+			ResponseHeaderTimeout: 3*time.Second,
+		}}
 		for {
 			url := fmt.Sprintf("http://%s:%d/api/log_stream", BOARD_IP, WEB_PORT)
-			resp, err := http.Get(url)
+			resp, err := client.Get(url)
 			if err != nil {
 				// Board is currently offline
 				setTrayState(false, false, "", "")
 				time.Sleep(3 * time.Second)
 				continue
 			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				time.Sleep(3 * time.Second)
+				continue
+			}
 
 			// Connected to board!
 			attached := false
-			if autoAttach {
+			stateMu.Lock()
+			auto := autoAttach
+			stateMu.Unlock()
+			if auto {
 				attached = attachUsbip()
 			} else {
 				attached = isUsbipPortAttached()
@@ -350,17 +399,18 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 		switch cmdId {
 		case CMD_ATTACH:
 			go func() {
-				// Flush any existing or duplicate devices first, then cleanly re-attach
-				detachUsbip()
-				runCmdSilent(USBIP_PATH, "attach", "--once", "-r", BOARD_IP, "-b", "1-1")
-				if isUsbipPortAttached() {
+				if attachUsbip() {
 					setTrayState(true, true, "Plink Connected", "Pod attached successfully.")
 				}
 			}()
 		case CMD_DETACH:
 			go func() {
+				stateMu.Lock()
+				autoAttach = false
+				online := isOnline
+				stateMu.Unlock()
 				detachUsbip()
-				setTrayState(isOnline, false, "Plink Closed", "Devices detached.")
+				setTrayState(online, false, "Plink Closed", "Devices detached.")
 			}()
 		case CMD_AUTOATTACH:
 			stateMu.Lock()
@@ -385,6 +435,9 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 
 func main() {
 	runtime.LockOSThread()
+	mutex, _, errMutex := pCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(utf16Ptr("Local\\PlinkTraySingleton"))))
+	if mutex == 0 || errMutex == syscall.Errno(183) { return }
+	defer pCloseHandle.Call(mutex)
 
 	hInstance, _, _ := pGetModuleHandleW.Call(0)
 

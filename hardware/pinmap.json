@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "gpio_base": 512,
+  "pins": [
+    {"name":"swclk0","port":"j3_swclk","header":"J3","pin":3,"fpga":"P16","line":54},
+    {"name":"swdio0","port":"j3_swdio","header":"J3","pin":4,"fpga":"P15","line":55},
+    {"name":"target_nrst","port":"j3_nrst","header":"J3","pin":5,"fpga":"T14","line":56},
+    {"name":"boot0","port":"j3_swo","header":"J3","pin":6,"fpga":"T10","line":57},
+    {"name":"uart0_tx","port":"j3_uart0_tx","header":"J3","pin":7,"fpga":"C20"},
+    {"name":"uart0_rx","port":"j3_uart0_rx","header":"J3","pin":8,"fpga":"B20"},
+    {"name":"uart1_tx","port":"j3_uart1_tx","header":"J3","pin":11,"fpga":"P14"},
+    {"name":"uart1_rx","port":"j3_uart1_rx","header":"J3","pin":12,"fpga":"R14"},
+    {"name":"io0","port":"j3_target_io0","header":"J3","pin":15,"fpga":"T15","line":58},
+    {"name":"io1","port":"j3_target_io1","header":"J3","pin":17,"fpga":"T17","line":59},
+    {"name":"io2","port":"j3_target_io2","header":"J3","pin":18,"fpga":"R18","line":60},
+    {"name":"io3","port":"j3_target_io3","header":"J3","pin":21,"fpga":"M14","line":61},
+    {"name":"io4","port":"j3_target_io4","header":"J3","pin":22,"fpga":"M15","line":62},
+    {"name":"io5","port":"j4_swclk","header":"J4","pin":3,"fpga":"V18","line":63},
+    {"name":"io6","port":"j4_swdio","header":"J4","pin":4,"fpga":"V17","line":64},
+    {"name":"io7","port":"j4_nrst","header":"J4","pin":5,"fpga":"Y16","line":65},
+    {"name":"swo1","port":"j4_swo","header":"J4","pin":6,"fpga":"T16"},
+    {"name":"io8","port":"j4_target_io8","header":"J4","pin":7,"fpga":"E17","line":66},
+    {"name":"io9","port":"j4_target_io9","header":"J4","pin":8,"fpga":"D18","line":67}
+  ]
+}

@@ -31,14 +31,19 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 void dap_init(void);
 uint8_t dap_req_get_byte(void);
 uint16_t dap_req_get_half(void);
 uint32_t dap_req_get_word(void);
 void dap_resp_add_byte(uint8_t value);
+void dap_resp_add_half(uint16_t value);
 void dap_resp_add_word(uint32_t value);
 void dap_resp_set_byte(int index, uint8_t value);
+void dap_swo_poll(void);
+void dap_session_close(void);
+void dap_write_stats(FILE *file);
 bool dap_is_buf_error(void);
 bool dap_filter_request(uint8_t *req);
 int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size);

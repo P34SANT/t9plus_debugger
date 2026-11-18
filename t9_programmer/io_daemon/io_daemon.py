@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-io_daemon.py - pcmsis Enterprise Programmer & Target I/O Controller
+io_daemon.py - Plink Programmer & Target I/O Controller
 Antminer T9+ Control Board V1.2 (Zynq-7000 XC7Z010)
 
 Exposes:
-  - Enterprise Web UI & REST API on port 8080
+  - Web UI & REST API on port 8080
   - Multi-engine target flashing:
       * STM32 SWD (Hardware accelerated OpenOCD)
       * STM32 UART Bootloader (stm32flash with auto BOOT0/nRST sequence)
@@ -23,20 +23,26 @@ import hashlib
 import threading
 import subprocess
 import logging
+import codecs
+import signal
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from safety import authorized, upload_bytes, MAX_UPLOAD_BYTES
+from ownership import ResourceLease, ResourceBusy
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
-logger = logging.getLogger("pcmsis_io_daemon")
+logger = logging.getLogger("plink_io_daemon")
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json")
-UPLOAD_DIR = "/tmp/pcmsis_uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = "/var/lib/plink/uploads"
 PORT = 8080
+API_TOKEN = ""
+BIND_ADDRESS = os.environ.get("PLINK_BIND_ADDRESS", "127.0.0.1")
 
 GPIO_D3_RED = 549   # MIO 37
 GPIO_D3_GREEN = 550 # MIO 38
@@ -96,6 +102,7 @@ class SysfsGPIO:
                 f.write(direction)
         except Exception as e:
             logger.error(f"Set direction {direction} on GPIO {gpio_num}: {e}")
+            raise
 
     @staticmethod
     def write(gpio_num, value):
@@ -106,6 +113,7 @@ class SysfsGPIO:
                 f.write("1" if value else "0")
         except Exception as e:
             logger.error(f"Write {value} to GPIO {gpio_num}: {e}")
+            raise
 
     @staticmethod
     def read(gpio_num, unexport_after=False):
@@ -113,13 +121,13 @@ class SysfsGPIO:
         was_exported = os.path.exists(path)
         if not was_exported:
             SysfsGPIO.export(gpio_num)
-        val = 0
+        val = None
         try:
             if os.path.exists(path):
                 with open(path, "r") as f:
                     val = int(f.read().strip())
         except Exception:
-            val = 0
+            val = None
         finally:
             if unexport_after:
                 SysfsGPIO.unexport(gpio_num)
@@ -178,23 +186,39 @@ class PinManager:
                     self.pins = json.load(f)
             else:
                 self.pins = {}
+            try:
+                with open("/var/lib/plink/pin_labels.json") as labels_file:
+                    for key, labels in json.load(labels_file).items():
+                        if key in self.pins:
+                            for field in ("alias", "role"):
+                                if field in labels:
+                                    self.pins[key][field] = str(labels[field])[:64]
+            except FileNotFoundError:
+                pass
 
     def save_config(self):
         with self.lock:
-            with open(self.config_file, "w") as f:
-                json.dump(self.pins, f, indent=2)
+            path = "/var/lib/plink/pin_labels.json"
+            with open(path + ".tmp", "w") as f:
+                json.dump({key: {field: pin.get(field, "") for field in ("alias", "role")}
+                           for key, pin in self.pins.items()}, f, indent=2)
+            os.replace(path + ".tmp", path)
 
     def apply_initial_states(self):
         for name, pin in self.pins.items():
             if pin.get("shared_swd"):
-                SysfsGPIO.unexport(pin["sysfs_gpio"])
                 continue
             gpio = pin["sysfs_gpio"]
             direction = pin.get("direction", "out")
-            SysfsGPIO.set_direction(gpio, direction)
-            if direction == "out":
-                val = pin.get("current_val", 1 if pin.get("active_low") else 0)
-                SysfsGPIO.write(gpio, val)
+            try:
+                with ResourceLease("pod2" if pin["header"] == "J4" else "pod1"):
+                    if direction == "out":
+                        val = pin.get("current_val", 1 if pin.get("active_low") else 0)
+                        SysfsGPIO.set_direction(gpio, "high" if val else "low")
+                    else:
+                        SysfsGPIO.set_direction(gpio, direction)
+            except ResourceBusy:
+                logger.warning("Skipping initial state for owned pin %s", name)
 
     def resolve_pin(self, query):
         query = query.strip().lower()
@@ -212,6 +236,14 @@ class PinManager:
         real_key, pin = self.resolve_pin(key)
         if not pin:
             raise KeyError(f"Pin '{key}' not found")
+        if pin.get("shared_swd"):
+            raise RuntimeError("Use a reset pulse, not a direct write to a debug pin")
+        if real_key == "boot0" and pin.get("mode", "swo") != "boot0":
+            raise RuntimeError("T10 is reserved for SWO; BOOT0 requires explicit rewiring and configuration")
+        if pin.get("direction", "in") != "out" and real_key != "boot0":
+            raise RuntimeError("Refusing to drive an input pin")
+        if real_key == "boot0":
+            SysfsGPIO.set_direction(pin["sysfs_gpio"], "out")
         val = 1 if val else 0
         pin["current_val"] = val
         SysfsGPIO.write(pin["sysfs_gpio"], val)
@@ -221,24 +253,66 @@ class PinManager:
         real_key, pin = self.resolve_pin(key)
         if not pin:
             raise KeyError(f"Pin '{key}' not found")
+        if pin.get("shared_swd") and real_key not in ("target_nrst", "io7"):
+            raise RuntimeError("Cannot pulse an SWD clock/data pin")
+        if pin.get("direction") != "out" and real_key not in ("target_nrst", "io7"):
+            raise RuntimeError("Refusing to pulse an input pin")
         gpio = pin["sysfs_gpio"]
         assert_val = 0 if active_low else 1
         release_val = 1 if active_low else 0
-        SysfsGPIO.set_direction(gpio, "out")
-        SysfsGPIO.write(gpio, assert_val)
-        time.sleep(ms / 1000.0)
-        SysfsGPIO.write(gpio, release_val)
+        SysfsGPIO.set_direction(gpio, "high" if assert_val else "low")
+        try:
+            time.sleep(ms / 1000.0)
+        finally:
+            if real_key in ("target_nrst", "io7"):
+                SysfsGPIO.set_direction(gpio, "in")  # Open drain: never drive nRST high.
+            else:
+                SysfsGPIO.write(gpio, release_val)
         pin["current_val"] = release_val
         return real_key, pin
 
 
-# Singletons
-d3_manager = D3LedManager()
-pin_manager = PinManager(CONFIG_PATH)
+# Initialized only by run_server(), never by imports or unit tests.
+d3_manager = None
+pin_manager = None
 
 # ==============================================================================
 # Flashing Workers
 # ==============================================================================
+def run_flash_command(cmd, timeout=300):
+    """Bound subprocess lifetime and line size while keeping live log output."""
+    emit_log(f"Executing: {' '.join(cmd)}")
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, errors="replace", start_new_session=True)
+    expired = threading.Event()
+    def terminate():
+        if process.poll() is None:
+            expired.set()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    timer = threading.Timer(timeout, terminate)
+    timer.daemon = True
+    timer.start()
+    try:
+        while True:
+            line = process.stdout.readline(4096)
+            if not line:
+                break
+            emit_log(line.rstrip("\r\n"))
+        result = process.wait()
+        if expired.is_set():
+            raise TimeoutError(f"Programming command exceeded {timeout} seconds")
+        return result
+    finally:
+        timer.cancel()
+        if process.poll() is None:
+            terminate()
+            process.wait(timeout=5)
+        process.stdout.close()
+
+
 def flash_stm32_uart(firmware_path, baud=115200, verify=True, reset_after=True):
     emit_log(f"Starting STM32 UART Bootloader engine on {firmware_path} @ {baud} baud...")
     d3_manager.set_mode("programming")
@@ -251,24 +325,20 @@ def flash_stm32_uart(firmware_path, baud=115200, verify=True, reset_after=True):
         pin_manager.pulse("rst", 50, active_low=True)
         time.sleep(0.1)
     except Exception as e:
-        emit_log(f"Warning on GPIO sequence: {e}")
+        raise RuntimeError(f"Unsafe or failed GPIO sequence: {e}") from e
 
     # 2. Execute stm32flash
     cmd = ["stm32flash", "-b", str(baud), "-w", firmware_path]
     if verify:
         cmd.append("-v")
-    cmd.extend(["-g", "0x08000000", "/dev/ttyPS1"])
+    if reset_after:
+        cmd.extend(["-g", "0x08000000"])
+    cmd.append("/dev/ttyPS1")
 
-    emit_log(f"Executing: {' '.join(cmd)}")
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for line in iter(p.stdout.readline, ''):
-        line = line.strip()
-        if line:
-            emit_log(line)
-    p.wait()
+    returncode = run_flash_command(cmd)
 
     # 3. Post-flash sequence: Deassert BOOT0=0, pulse nRST
-    if reset_after:
+    if reset_after and returncode == 0:
         emit_log("Resetting target into user flash mode (BOOT0=LOW, nRST pulse)...")
         try:
             pin_manager.set_value("boot0", 0)
@@ -277,11 +347,11 @@ def flash_stm32_uart(firmware_path, baud=115200, verify=True, reset_after=True):
         except Exception as e:
             emit_log(f"Warning on reset: {e}")
 
-    if p.returncode == 0:
+    if returncode == 0:
         emit_log("[+] SUCCESS: STM32 UART flash and verification complete!")
         d3_manager.set_mode("success")
     else:
-        emit_log(f"[-] ERROR: stm32flash failed with exit code {p.returncode}")
+        emit_log(f"[-] ERROR: stm32flash failed with exit code {returncode}")
         d3_manager.set_mode("error")
 
 
@@ -299,7 +369,7 @@ def flash_esp32_uart(firmware_path, address="0x1000", baud=115200, verify=True, 
         pin_manager.set_value("io0", 1)
         time.sleep(0.1)
     except Exception as e:
-        emit_log(f"Warning on ESP32 handshake: {e}")
+        raise RuntimeError(f"Failed ESP32 handshake: {e}") from e
 
     # 2. Execute esptool
     cmd = [
@@ -313,16 +383,10 @@ def flash_esp32_uart(firmware_path, address="0x1000", baud=115200, verify=True, 
     if verify:
         cmd.append("--verify")
 
-    emit_log(f"Executing: {' '.join(cmd)}")
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for line in iter(p.stdout.readline, ''):
-        line = line.strip()
-        if line:
-            emit_log(line)
-    p.wait()
+    returncode = run_flash_command(cmd)
 
     # 3. Post-flash reset
-    if reset_after:
+    if reset_after and returncode == 0:
         emit_log("Resetting ESP32 into normal execution mode (IO0=HIGH, EN pulse)...")
         try:
             pin_manager.set_value("io0", 1)
@@ -331,11 +395,11 @@ def flash_esp32_uart(firmware_path, address="0x1000", baud=115200, verify=True, 
         except Exception as e:
             emit_log(f"Warning on ESP32 reset: {e}")
 
-    if p.returncode == 0:
+    if returncode == 0:
         emit_log("[+] SUCCESS: ESP32 flashing complete!")
         d3_manager.set_mode("success")
     else:
-        emit_log(f"[-] ERROR: esptool failed with exit code {p.returncode}")
+        emit_log(f"[-] ERROR: esptool failed with exit code {returncode}")
         d3_manager.set_mode("error")
 
 
@@ -343,9 +407,9 @@ def flash_esp32_uart(firmware_path, address="0x1000", baud=115200, verify=True, 
 # Plink HTML5 Dashboard
 # ==============================================================================
 # ==============================================================================
-# Plink Cyber-Industrial Dashboard
+# Legacy embedded dashboard (not served; active frontend lives in web/).
 # ==============================================================================
-ENTERPRISE_DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -723,6 +787,24 @@ ENTERPRISE_DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+function escapeHtml(value) {
+  const element = document.createElement('span');
+  element.textContent = String(value);
+  return element.innerHTML;
+}
+// Token remains in this page's memory, never in a URL or browser storage.
+const originalFetch = window.fetch.bind(window);
+let controlToken = '';
+window.fetch = async (url, options = {}) => {
+  if ((options.method || 'GET').toUpperCase() === 'POST') {
+    if (!controlToken) controlToken = window.prompt('Plink API token:') || '';
+    options.headers = new Headers(options.headers || {});
+    options.headers.set('Authorization', 'Bearer ' + controlToken);
+  }
+  const response = await originalFetch(url, options);
+  if (response.status === 401) controlToken = '';
+  return response;
+};
 let currentFile = null;
 
 function switchNav(tabId) {
@@ -751,7 +833,7 @@ function onFileSelected(file) {
   document.getElementById('drop-text').style.display = 'none';
   const info = document.getElementById('file-info');
   info.style.display = 'block';
-  info.innerHTML = `<strong>FILE:</strong> ${file.name}<br>` +
+  info.innerHTML = `<strong>FILE:</strong> ${escapeHtml(file.name)}<br>` +
                    `<strong>SIZE:</strong> ${(file.size / 1024).toFixed(2)} KB (${file.size} bytes)<br>` +
                    `<span style="color:var(--green);">[STAGED AND READY FOR EXECUTION]</span>`;
   appendLog(`[HOST] Staged: ${file.name} (${file.size} B)`);
@@ -850,7 +932,7 @@ async function loadPins() {
     const tbody = document.getElementById('pins-table-body');
     tbody.innerHTML = '';
     for (const [k, p] of Object.entries(pins)) {
-      const valStr = p.current_val === 1 
+      const valStr = p.current_val === null ? 'UNKNOWN / BACKEND OWNED' : p.current_val === 1
         ? '<span style="color:var(--green);">● HIGH (1)</span>' 
         : '<span style="color:var(--text-muted);">○ LOW (0)</span>';
       const tr = document.createElement('tr');
@@ -858,7 +940,7 @@ async function loadPins() {
         <td><strong>${k}</strong></td>
         <td>${p.header} Pin ${p.pin_num}</td>
         <td><code>${p.fpga_pin}</code></td>
-        <td>${p.alias || p.role || '-'}</td>
+        <td>${escapeHtml(p.alias || p.role || '-')}</td>
         <td>${p.direction.toUpperCase()}</td>
         <td>${valStr}</td>
         <td>
@@ -888,6 +970,7 @@ function initLogStream() {
     appendLog(e.data);
   };
   es.onerror = function() {
+    es.close();
     setTimeout(initLogStream, 3000);
   };
 }
@@ -929,30 +1012,45 @@ window.onload = function() {
 # REST API & HTTP Server
 # ==============================================================================
 class RestApiHandler(BaseHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        super().end_headers()
+
+    def send_event(self, data):
+        self.wfile.write(("data: " + json.dumps(data) + "\n\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(10)
+
     def send_json(self, data, code=200):
         body = json.dumps(data).encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+        self.send_error(403, "Cross-origin control is disabled")
 
     def do_GET(self):
         url = urlparse(self.path)
         path = url.path.rstrip('/')
 
-        if path == "" or path == "/index.html":
-            body = ENTERPRISE_DASHBOARD_HTML.encode('utf-8')
+        assets = {"": ("index.html", "text/html; charset=utf-8"),
+                  "/index.html": ("index.html", "text/html; charset=utf-8"),
+                  "/app.css": ("app.css", "text/css; charset=utf-8"),
+                  "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+        if path in assets:
+            filename, content_type = assets[path]
+            body = (Path(__file__).parent / "web" / filename).read_bytes()
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Type', content_type)
+            self.send_header('Cache-Control', 'no-cache')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -963,7 +1061,6 @@ class RestApiHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
             import queue
@@ -977,8 +1074,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 while True:
                     try:
                         line = q.get(timeout=20.0)
-                        self.wfile.write(f"data: {line}\n\n".encode('utf-8'))
-                        self.wfile.flush()
+                        self.send_event({"text": line})
                     except queue.Empty:
                         self.wfile.write(b": heartbeat\n\n")
                         self.wfile.flush()
@@ -991,17 +1087,22 @@ class RestApiHandler(BaseHTTPRequestHandler):
             return
 
         elif path == "/api/serial/stream":
+            channel = parse_qs(url.query).get("channel", ["0"])[0]
+            if channel not in ("0", "1"):
+                self.send_json({"error": "channel must be 0 or 1"}, 400)
+                return
             self.send_response(200)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
 
+            s = None
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(2.0)
-                s.connect(("127.0.0.1", 2000))
+                s.connect(("127.0.0.1", 2000 + int(channel)))
                 s.setblocking(False)
                 while True:
                     r, _, _ = select.select([s], [], [], 10.0)
@@ -1009,37 +1110,111 @@ class RestApiHandler(BaseHTTPRequestHandler):
                         data = s.recv(1024)
                         if not data:
                             break
-                        text = data.decode('utf-8', errors='replace').strip()
+                        text = decoder.decode(data)
                         if text:
-                            self.wfile.write(f"data: {text}\n\n".encode('utf-8'))
-                            self.wfile.flush()
+                            self.send_event({"text": text})
                     else:
                         self.wfile.write(b": keepalive\n\n")
                         self.wfile.flush()
-            except Exception:
-                pass
+            except OSError:
+                try:
+                    self.send_event({"error": "UART bridge unavailable or stream closed"})
+                except OSError:
+                    pass
+            finally:
+                if s is not None:
+                    s.close()
+            return
+
+        elif path == "/api/pinmap":
+            self.send_json(json.loads((Path(__file__).resolve().parents[2] / "hardware" / "pinmap.json").read_text()))
             return
 
         elif path == "/api/status":
+            try:
+                with open("/sys/class/fpga_manager/fpga0/state") as state_file:
+                    fpga_state = state_file.read().strip()
+            except OSError:
+                fpga_state = "unknown"
+            try:
+                abi_ready = Path("/run/plink/fpga-ready").read_text() == "plink-abi-2\n"
+            except OSError:
+                abi_ready = False
             self.send_json({
                 "status": "ok",
-                "pod": "pcmsis",
-                "fpga_state": "operating",
+                "pod": "Plink",
+                "fpga_state": fpga_state,
+                "abi_ready": abi_ready,
+                "required_abi": 2,
                 "d3_led": d3_manager.mode
             })
+            return
+
+        elif path == "/api/metrics":
+            result = {}
+            for name in ("pod1", "uart"):
+                filename = f"/run/plink/{name}.json"
+                try:
+                    with open(filename) as snapshot:
+                        result[name] = {"age_seconds": max(0, time.time() - os.stat(filename).st_mtime),
+                                        "metrics": json.load(snapshot)}
+                except (OSError, ValueError):
+                    result[name] = {"state": "unknown"}
+            self.send_json(result)
             return
 
         elif path == "/api/pins":
             res = {}
             for k, pin in pin_manager.pins.items():
+                if pin.get("shared_swd"):
+                    res[k] = dict(pin, current_val=None, state="owned_by_debug_backend")
+                    continue
                 pin["current_val"] = SysfsGPIO.read(pin["sysfs_gpio"], unexport_after=pin.get("shared_swd", False))
                 res[k] = pin
             self.send_json(res)
             return
 
+        if path.startswith("/api/pins/") and path.endswith("/get"):
+            key, pin = pin_manager.resolve_pin(path.split("/")[-2])
+            if pin is None:
+                self.send_json({"error": "Unknown pin"}, 404)
+            else:
+                value = None if pin.get("shared_swd") else SysfsGPIO.read(pin["sysfs_gpio"])
+                self.send_json({"pin": key, "val": value})
+            return
         self.send_json({"error": f"Endpoint not found: {self.path}"}, 404)
 
     def do_POST(self):
+        if (authorized(self.headers.get("Authorization"), API_TOKEN) and
+                urlparse(self.path).path.rstrip("/") in (
+                    "/api/programmer/reset", "/api/programmer/bootloader",
+                    "/api/esp32/reset", "/api/serial/send")):
+            try:
+                with ResourceLease("pod1"):
+                    return self._do_POST()
+            except ResourceBusy as error:
+                self.send_json({"error": str(error)}, 409)
+                return
+        return self._do_POST()
+
+    def _do_POST(self):
+        if not authorized(self.headers.get("Authorization"), API_TOKEN):
+            self.send_json({"error": "Bearer authentication required"}, 401)
+            self.close_connection = True
+            return
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+            self.send_json({"error": "Cross-origin control is disabled"}, 403)
+            self.close_connection = True
+            return
+        try:
+            content_len = int(self.headers.get("Content-Length", "0"))
+            if not 0 <= content_len <= MAX_UPLOAD_BYTES:
+                raise ValueError("Payload exceeds 16 MiB")
+        except ValueError:
+            self.send_json({"error": "Invalid Content-Length"}, 413)
+            self.close_connection = True
+            return
         url = urlparse(self.path)
         path = url.path.rstrip('/')
 
@@ -1051,28 +1226,18 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 return
 
             raw_data = self.rfile.read(content_len)
-            filename = "firmware.bin"
+            try:
+                if len(raw_data) != content_len:
+                    raise ValueError("Truncated upload")
+                filename, file_bytes = upload_bytes(content_type, raw_data)
+            except (ValueError, UnicodeError) as error:
+                self.send_json({"error": str(error)}, 400)
+                return
 
-            # Parse multipart boundary if present
-            if 'boundary=' in content_type:
-                boundary = content_type.split('boundary=')[1].strip().encode('utf-8')
-                parts = raw_data.split(b'--' + boundary)
-                file_bytes = b""
-                for p in parts:
-                    if b'filename="' in p:
-                        hdr, body = p.split(b'\r\n\r\n', 1)
-                        body = body.rstrip(b'\r\n')
-                        file_bytes = body
-                        for h in hdr.decode('utf-8', errors='ignore').split('\r\n'):
-                            if 'filename="' in h:
-                                fn = h.split('filename="')[1].split('"')[0]
-                                if fn: filename = os.path.basename(fn)
-                        break
-            else:
-                file_bytes = raw_data
-
-            save_path = os.path.join(UPLOAD_DIR, filename)
-            with open(save_path, "wb") as f:
+            # A unique immutable upload prevents concurrent jobs overwriting a file.
+            import secrets
+            save_path = os.path.join(UPLOAD_DIR, secrets.token_hex(8) + "-" + filename)
+            with open(save_path, "xb") as f:
                 f.write(file_bytes)
 
             sha = hashlib.sha256(file_bytes).hexdigest()
@@ -1086,11 +1251,59 @@ class RestApiHandler(BaseHTTPRequestHandler):
             return
 
         content_len = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_len).decode('utf-8') if content_len > 0 else "{}"
         try:
+            raw = self.rfile.read(content_len)
+            if len(raw) != content_len:
+                raise ValueError("Truncated request")
+            body = raw.decode('utf-8') if content_len else "{}"
             payload = json.loads(body) if body else {}
-        except Exception:
-            payload = {}
+        except (ValueError, UnicodeError):
+            self.send_json({"error": "Valid UTF-8 JSON required"}, 400)
+            return
+
+        if not isinstance(payload, dict):
+            self.send_json({"error": "JSON object required"}, 400)
+            return
+        if path == "/api/pins/configure":
+            key, pin = pin_manager.resolve_pin(str(payload.get("pin", "")))
+            if pin is None:
+                self.send_json({"error": "Unknown pin"}, 404)
+                return
+            for field in ("alias", "role"):
+                if field in payload:
+                    pin[field] = str(payload[field])[:64]
+            pin_manager.save_config()
+            self.send_json({"pin": key, "config": pin})
+            return
+        if path.startswith("/api/pins/"):
+            parts = path.split("/")
+            if len(parts) != 5 or parts[4] not in ("set", "pulse"):
+                self.send_json({"error": "Unknown pin operation"}, 404)
+                return
+            key, pin = pin_manager.resolve_pin(parts[3])
+            if pin is None:
+                self.send_json({"error": "Unknown pin"}, 404)
+                return
+            try:
+                with ResourceLease("pod2" if pin["header"] == "J4" else "pod1"):
+                    if parts[4] == "set":
+                        value = int(payload.get("val", -1))
+                        if value not in (0, 1):
+                            raise ValueError("val must be 0 or 1")
+                        pin_manager.set_value(key, value)
+                    else:
+                        duration = int(payload.get("ms", 50))
+                        if not 1 <= duration <= 1000:
+                            raise ValueError("Pulse must be 1..1000 ms")
+                        pin_manager.pulse(key, duration, active_low=pin.get("active_low", False))
+            except ResourceBusy as error:
+                self.send_json({"error": str(error)}, 409)
+                return
+            except (ValueError, RuntimeError) as error:
+                self.send_json({"error": str(error)}, 400)
+                return
+            self.send_json({"pin": key, "status": "ok"})
+            return
 
         if path == "/api/flash":
             engine = payload.get("engine", "stm32_uart")
@@ -1099,32 +1312,69 @@ class RestApiHandler(BaseHTTPRequestHandler):
             baud = payload.get("baud", 115200)
             verify = payload.get("verify", True)
             reset_after = payload.get("reset_after", True)
+            if (not isinstance(filename, str) or
+                    type(baud) is not int or baud not in (9600, 19200, 38400, 57600, 115200) or
+                    type(verify) is not bool or type(reset_after) is not bool or
+                    not isinstance(address, str)):
+                self.send_json({"error": "Invalid programming parameters"}, 400)
+                return
+            try:
+                numeric_address = int(address, 0)
+                if not 0 <= numeric_address <= 0xFFFFFFFF:
+                    raise ValueError()
+                if engine == "stm32_uart" and numeric_address != 0x08000000:
+                    raise ValueError()
+            except ValueError:
+                self.send_json({"error": "Invalid start address (STM32 requires 0x08000000)"}, 400)
+                return
 
-            if not filename or not os.path.isfile(filename):
+            from pathlib import Path
+            root = Path(UPLOAD_DIR).resolve()
+            candidate = Path(filename).resolve() if filename else None
+            if not candidate or candidate.parent != root or not candidate.is_file():
                 self.send_json({"error": f"Firmware file not found on device: {filename}"}, 400)
                 return
 
             if engine == "stm32_uart":
-                t = threading.Thread(target=flash_stm32_uart, args=(filename, baud, verify, reset_after), daemon=True)
-                t.start()
+                worker = flash_stm32_uart
+                arguments = (str(candidate), baud, verify, reset_after)
             elif engine == "esp32_uart":
-                t = threading.Thread(target=flash_esp32_uart, args=(filename, address, baud, verify, reset_after), daemon=True)
-                t.start()
+                worker = flash_esp32_uart
+                arguments = (str(candidate), address, baud, verify, reset_after)
             else:
                 self.send_json({"error": f"Unknown engine: {engine}"}, 400)
                 return
+            try:
+                lease = ResourceLease("pod1", "uart0")
+            except ResourceBusy as error:
+                self.send_json({"error": str(error)}, 409)
+                return
+            def run_job():
+                with lease:
+                    try:
+                        worker(*arguments)
+                    except Exception as error:
+                        emit_log(f"Flash job aborted: {error}")
+                        d3_manager.set_mode("error")
+            try:
+                threading.Thread(target=run_job, daemon=True).start()
+            except Exception:
+                lease.close()
+                raise
 
             self.send_json({"status": "started", "engine": engine, "file": filename})
             return
 
         elif path == "/api/serial/send":
             text = payload.get("text", "")
+            channel = payload.get("channel", 0)
+            if (type(channel) is not int or channel not in (0, 1) or
+                    not isinstance(text, str) or len(text.encode("utf-8")) > 16384):
+                self.send_json({"error": "Invalid serial channel or text"}, 400)
+                return
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(2.0)
-                s.connect(("127.0.0.1", 2000))
-                s.sendall(text.encode('utf-8'))
-                s.close()
+                with socket.create_connection(("127.0.0.1", 2000 + channel), timeout=2) as s:
+                    s.sendall(text.encode('utf-8'))
                 self.send_json({"status": "ok"})
             except Exception as e:
                 self.send_json({"error": str(e)}, 500)
@@ -1170,13 +1420,23 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 def run_server():
-    server_address = ('0.0.0.0', PORT)
+    global d3_manager, pin_manager, API_TOKEN
+    token_path = os.environ.get("PLINK_API_TOKEN_FILE", "/etc/plink/api.token")
+    try:
+        with open(token_path, encoding="ascii") as token_file:
+            API_TOKEN = token_file.read().strip()
+    except OSError:
+        logger.warning("No API token: control endpoints will reject requests")
+    os.makedirs(UPLOAD_DIR, mode=0o700, exist_ok=True)
+    d3_manager = D3LedManager()
+    pin_manager = PinManager(CONFIG_PATH)
+    server_address = (BIND_ADDRESS, PORT)
     httpd = ThreadedHTTPServer(server_address, RestApiHandler)
     logger.info(f"Plink Server active on http://0.0.0.0:{PORT}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        logger.info("Stopping pcmsis server.")
+        logger.info("Stopping Plink server.")
     finally:
         httpd.server_close()
 

@@ -8,12 +8,13 @@
 #include <sys/mman.h>
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
 
 #define DAP_CONFIG_DEFAULT_PORT        1 // DAP_PORT_SWD
 #define DAP_CONFIG_DEFAULT_CLOCK       1000000 // 1 MHz
 
 #define DAP_CONFIG_PACKET_SIZE         512
-#define DAP_CONFIG_PACKET_COUNT        1
+#define DAP_CONFIG_PACKET_COUNT        8
 
 #define DAP_CONFIG_VENDOR_STR          "Plink"
 #define DAP_CONFIG_PRODUCT_STR         "Plink"
@@ -47,7 +48,9 @@
 
 extern volatile uint32_t *gpio_mem;
 extern volatile uint32_t *swd_hw_mem;
+extern volatile uint32_t *swo_hw_mem;
 extern bool swd_hw_available;
+extern bool swo_hw_available;
 
 #define SWD_HW_BASE         0x43C00000
 #define SWD_REG_CTRL        0x00
@@ -58,7 +61,31 @@ extern bool swd_hw_available;
 #define SWD_REG_RAW_LEN     0x14
 #define SWD_REG_ID          0x18
 
+// SWO Trace Engine (0x43C20000) - axi_swo_engine.v
+#define SWO_HW_BASE         0x43C20000
+#define SWO_REG_CTRL        0x00  // [0]=enable, [1]=flush, [2]=channel(Pod), [3]=invert
+#define SWO_REG_CLK_DIV     0x04  // Baud prescaler: 100MHz / div (div=50 -> 2.0 Mbps)
+#define SWO_REG_DATA_BYTE   0x08  // Pop byte: [7:0]=data, [8]=valid
+#define SWO_REG_DATA_PEEK   0x0C  // Peek byte without popping
+#define SWO_REG_STATUS      0x10  // [0]=enabled, [1]=overflow, [2]=empty, [3]=full
+#define SWO_REG_FIFO_COUNT  0x14  // Bytes in FIFO
+#define SWO_REG_ID          0x18  // 0x53574F01 ("SWO1")
+#define SWO_REG_TOTAL       0x1C  // Total received byte counter
+
+#define SWO_CORE_ID         0x53574F02
+#define SWO_FIFO_SIZE       (1024u * 1024u) /* Continuously drained DDR ring */
+#define SWO_FPGA_CLOCK      100000000
+
+extern volatile uint32_t *swo_hw_mem;
+extern bool swo_hw_available;
+
 static inline bool is_fpga_operating(void) {
+    FILE *ready = fopen("/run/plink/fpga-ready", "r");
+    char abi[32] = {0};
+    if (!ready) return false;
+    bool verified = fgets(abi, sizeof(abi), ready) && !strcmp(abi, "plink-abi-2\n");
+    fclose(ready);
+    if (!verified) return false;
     FILE *f = fopen("/sys/class/fpga_manager/fpga0/state", "r");
     if (!f) return false;
     char state[32] = {0};
@@ -91,16 +118,68 @@ static inline int zynq_swd_hw_init(void) {
         return -1;
     }
 
-    if (swd_hw_mem[SWD_REG_ID / 4] == 0x53574401) {
+    if (swd_hw_mem[SWD_REG_ID / 4] == 0x53574401 ||
+        swd_hw_mem[SWD_REG_ID / 4] == 0x53574402) {
         swd_hw_available = true;
         // Default: 2.0 MHz (div=24), HW_EN=1 (bit 15), IDLE_CYCLES=8 (bits 12:8)
         swd_hw_mem[SWD_REG_CLK_DIV / 4] = 24;
-        swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (8 << 8);
+        swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 17) | (1 << 15) | (8 << 8);
     } else {
         swd_hw_available = false;
         swd_hw_mem[SWD_REG_CTRL / 4] = 0; // Clear HW_EN bit 15 to grant EMIO pin control
     }
     return 0;
+}
+
+static inline int zynq_swo_hw_init(void) {
+    if (swo_hw_mem != NULL) return 0;
+
+    // Fail-safe: never touch /dev/mem at PL addresses if FPGA is not operating
+    if (!is_fpga_operating()) {
+        swo_hw_available = false;
+        swo_hw_mem = NULL;
+        return 0;
+    }
+
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) return -1;
+    swo_hw_mem = (volatile uint32_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SWO_HW_BASE);
+    close(fd);
+    if (swo_hw_mem == MAP_FAILED) {
+        swo_hw_mem = NULL;
+        swo_hw_available = false;
+        return -1;
+    }
+
+    if ((swo_hw_mem[SWO_REG_ID / 4] & 0xFFFFFF00) == 0x53574F00 &&
+        (swo_hw_mem[SWO_REG_ID / 4] & 0xFF) >= 1 &&
+        (swo_hw_mem[SWO_REG_ID / 4] & 0xFF) <= 2) {
+        swo_hw_available = true;
+        // Default: disabled, Pod #1 (J3 Pin 6 / T10), 2.0 Mbps (div=50)
+        swo_hw_mem[SWO_REG_CTRL / 4]    = 0x00000000;
+        swo_hw_mem[SWO_REG_CLK_DIV / 4] = SWO_FPGA_CLOCK / 2000000;
+    } else {
+        swo_hw_available = false;
+    }
+    return 0;
+}
+
+// BOOT0 / SWO shared line (J3 Pin 6 = T10 = EMIO 57):
+// Keep this line Hi-Z even after capture stops: the target can still drive SWO.
+// BOOT0 control requires explicit user action and different target wiring.
+#define BOOT0_SYSFS_GPIO  569
+static inline int zynq_swo_release_pin(void)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", BOOT0_SYSFS_GPIO);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        perror("SWO pin direction");
+        return -1;
+    }
+    int result = fputs("in", f);
+    int closed = fclose(f);
+    return (result == EOF || closed != 0) ? -1 : 0;
 }
 
 static inline int zynq_gpio_init(void) {
@@ -119,8 +198,8 @@ static inline int zynq_gpio_init(void) {
     }
 
     // Configure SWCLK, SWDIO as outputs; nRST initially as input (pullup keeps high)
-    gpio_mem[DIRM_2 / 4] |= (1 << PIN_SWCLK) | (1 << PIN_SWDIO);
-    gpio_mem[OEN_2 / 4]  |= (1 << PIN_SWCLK) | (1 << PIN_SWDIO);
+    gpio_mem[DIRM_2 / 4] &= ~((1 << PIN_SWCLK) | (1 << PIN_SWDIO));
+    gpio_mem[OEN_2 / 4]  &= ~((1 << PIN_SWCLK) | (1 << PIN_SWDIO));
     gpio_mem[DIRM_2 / 4] &= ~(1 << PIN_NRST);
     gpio_mem[OEN_2 / 4]  &= ~(1 << PIN_NRST);
 
@@ -234,13 +313,18 @@ static inline int DAP_CONFIG_nTRST_read(void) { return 0; }
 
 // Port Control
 static inline void DAP_CONFIG_SETUP(void) {
+#ifdef PLINK_OFFLINE_TEST
+    return;
+#else
     zynq_gpio_init();
     zynq_swd_hw_init();
-    zynq_pin_dir_out(PIN_SWCLK);
-    zynq_pin_dir_out(PIN_SWDIO);
+    zynq_swo_hw_init();
+    zynq_pin_dir_in(PIN_SWCLK);
+    zynq_pin_dir_in(PIN_SWDIO);
     zynq_set_pin(PIN_SWCLK, 1);
     zynq_set_pin(PIN_SWDIO, 1);
     DAP_CONFIG_nRESET_write(1);
+#endif
 }
 
 extern struct timespec dap_last_prog_ts;
@@ -296,12 +380,18 @@ static inline void dap_activity_blink(void) {
 }
 
 static inline void DAP_CONFIG_DISCONNECT(void) {
+    if (swd_hw_available && swd_hw_mem) {
+        /* Revision 2 RELEASE bit overrides FPGA pin drive; v1 drops the mux. */
+        swd_hw_mem[SWD_REG_CTRL / 4] = (1u << 17) | (1u << 15);
+    }
     zynq_pin_dir_in(PIN_SWCLK);
     zynq_pin_dir_in(PIN_SWDIO);
     dap_activity_idle();
 }
 
 static inline void DAP_CONFIG_CONNECT_SWD(void) {
+    if (swd_hw_available && swd_hw_mem)
+        swd_hw_mem[SWD_REG_CTRL / 4] = (1u << 15) | (8u << 8);
     zynq_pin_dir_out(PIN_SWCLK);
     zynq_pin_dir_out(PIN_SWDIO);
     zynq_set_pin(PIN_SWCLK, 1);
@@ -328,6 +418,9 @@ static inline void DAP_CONFIG_LED(int index, int state) {
 }
 
 static inline void DAP_CONFIG_DELAY(uint32_t cycles) {
+#ifdef PLINK_OFFLINE_TEST
+    (void)cycles;
+#else
     if (cycles < 10) cycles = 10;
     __asm__ volatile (
         "1: subs %0, %0, #1 \n\t"
@@ -336,6 +429,7 @@ static inline void DAP_CONFIG_DELAY(uint32_t cycles) {
         :
         : "cc"
     );
+#endif
 }
 
 #endif // _DAP_CONFIG_H_

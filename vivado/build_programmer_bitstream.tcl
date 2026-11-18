@@ -6,12 +6,11 @@ set script_dir [file normalize [file dirname [info script]]]
 set repo_root  [file normalize [file join $script_dir ".."]]
 set proj_file  [file normalize [file join $repo_root "build_programmer" "t9_stm32_programmer.xpr"]]
 
-if {[file exists $proj_file]} {
-    puts "==> Opening existing project '$proj_file'..."
-    open_project $proj_file
-} else {
-    source [file join $script_dir "create_programmer_project.tcl"]
-}
+set snapshot [file join $repo_root "build_source_snapshot.json"]
+exec python [file join $repo_root "scripts" "check_pinmap.py"]
+exec python [file join $repo_root "scripts" "release_manifest.py"] snapshot --root $repo_root --output $snapshot
+# Recreate the generated block design: cached projects can lack new cores/ports.
+source [file join $script_dir "create_programmer_project.tcl"]
 
 # Add top-level Verilog wrapper
 puts "==> Adding top-level Verilog wrapper..."
@@ -29,6 +28,8 @@ set_property target_constrs_file $xdc_file [current_fileset -constrset]
 # Update module reference if needed
 puts "==> Refreshing Block Design module references..."
 catch { update_module_reference design_programmer_axi_swd_0_0 }
+catch { update_module_reference design_programmer_axi_swd_1_0 }
+catch { update_module_reference design_programmer_axi_swo_0_0 }
 catch { reset_run design_programmer_axi_swd_0_0_synth_1 }
 
 # Launch Synthesis
@@ -56,6 +57,14 @@ if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
     exit 1
 }
 
+open_run impl_1
+set worst_setup [get_timing_paths -delay_type max -max_paths 1]
+set worst_hold [get_timing_paths -delay_type min -max_paths 1]
+if {[llength $worst_setup] == 0 || [get_property SLACK $worst_setup] < 0 ||
+    ([llength $worst_hold] != 0 && [get_property SLACK $worst_hold] < 0)} {
+    error "Internal routed timing failed; no release will be packaged"
+}
+
 # Locate output bitstream
 set impl_dir [get_property DIRECTORY [get_runs impl_1]]
 set bit_file [file normalize [file join $impl_dir "top_programmer.bit"]]
@@ -65,12 +74,14 @@ set dest_bit [file normalize [file join $repo_root "t9_programmer.bit"]]
 set dest_hwh [file normalize [file join $repo_root "t9_programmer.hwh"]]
 
 if {[file exists $bit_file]} {
+    if {![file exists $hwh_file]} { error "Missing HWH; refusing unmatched release" }
     file copy -force $bit_file $dest_bit
-    if {[file exists $hwh_file]} {
-        file copy -force $hwh_file $dest_hwh
-    }
+    file copy -force $hwh_file $dest_hwh
     puts ""
     puts "=========================================================================="
+    set release_dir [file join $repo_root "releases" [clock format [clock seconds] -format "%Y%m%d-%H%M%S"]]
+    exec python [file join $repo_root "scripts" "release_manifest.py"] package \
+        --root $repo_root --output $release_dir --snapshot $snapshot --bit $dest_bit --hwh $dest_hwh
     puts " SUCCESS: t9_programmer.bit created successfully! ([file size $dest_bit] bytes)"
     puts "=========================================================================="
 } else {

@@ -1,131 +1,145 @@
-# Plink // Multi-Protocol Hardware Debug Probe & Programmer Pod
-**Turnkey FPGA-Accelerated Debugger, Dual UART & Multi-Target Programmer on Antminer T9+**
+# Plink
 
-![Plink Logo](plink_logo.svg)
+**A buffered, measurable FPGA debug probe on the Antminer T9+ / Zynq-7000.**
 
-Transform any Antminer T9+ Control Board (Xilinx Zynq XC7Z010-1CLG400C) into **Plink** — a high-speed **CMSIS-DAP v2 Hardware Debugger**, **Native USB Virtual COM Port (CDC-ACM)**, and web-driven multi-target programming pod over Gigabit Ethernet.
+![Plink](plink_logo.svg)
 
----
+Plink combines CMSIS-DAP SWD, asynchronous SWO capture and two 115200-baud
+serial channels over Ethernet. Windows clients use standard WinUSB and CDC-ACM
+interfaces through USB/IP; a dependency-free web workspace provides connector
+inspection, serial consoles, programming controls and diagnostics.
 
-## Key Features
+## Current status — read before connecting
 
-- **FPGA Hardware SWD Acceleration (`axi_swd_engine.v`):** Custom RTL core synthesized in Zynq PL at `0x43C00000`. Supports dynamic clock scaling from **100 kHz up to 25.0 MHz** on the fly with zero CPU jitter and timing closure.
-- **Native Windows USB Composite Device (USB/IP):**
-  - **Interface 0:** WinUSB CMSIS-DAP v2 (Microsoft OS 2.0 & 1.0 descriptors with GUID `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`). Automatic driver binding on Windows 7, 8.1, 10, and 11.
-  - **Interface 1 & 2:** Standard USB CDC-ACM Virtual COM Port (`usbser.sys`). Enumerate a **native `COMx` port** in Windows Device Manager automatically.
-- **Dynamic Bicolor Status Signaling (LED D3):**
-  - **Flash Programming:** Blinks **GREEN ONLY** (fast 60ms toggle). Red LED stays strictly OFF.
-  - **Interactive Debugging:** Blinks **alternating Green & Red** (Green ON / Red OFF $\leftrightarrow$ Green OFF / Red ON, 80ms cycle). Never illuminated at the same time.
-  - **Idle / Disconnected:** Both LEDs OFF (target pins safely tristated).
-- **Zero-Polling Windows Tray Utility (`plink-tray.exe`):**
-  - Lightweight system tray app built in **Go 1.20** (natively supporting Windows 7 through 11).
-  - Passive TCP socket event wait: **0% CPU consumption and zero network polling packets**. Automatically attaches USB/IP when the pod powers on.
-- **Tabbed Web Management Interface (Port 8080):**
-  - **Tab 1 (Dashboard & States):** System architecture state, hardware controls (nRST pulse, BOOT0, ESP32 handshake), and embedded live UART0 serial terminal.
-  - **Tab 2 (UART Programming):** Multi-engine flasher supporting STM32 (`stm32flash`) and ESP32 (`esptool.py`) with drag-and-drop file upload (`.hex`, `.bin`, `.elf`), baud rate configuration (9600 to 921600), and real-time Server-Sent Events (SSE) execution log streaming.
-  - **Tab 3 (Pin Telemetry & Hardware):** Live voltage/logic level monitoring of all J3/J4 header pins.
+This branch introduces **hardware/software ABI 2**. It is **not** a drop-in
+software update for the older bitstream.
 
----
+- New transport, buffering, API and RTL changes have offline regression coverage.
+- Earlier ABI 1 STM32F407 SWO captures were verified through OpenOCD and Python.
+  Those results do not qualify ABI 2.
+- **Live ABI 2 qualification is pending.** Sustained trace capture, simultaneous
+  dual-CDC traffic, UARTLite IRQ/device-tree behavior and reconnect stability
+  still require separately approved hardware tests.
+- A Windows `IRQL_NOT_LESS_OR_EQUAL` crash occurred during earlier experiments.
+  Its responsible driver and root cause remain unknown. Avoid routine virtual
+  hub resets or unattended reconnect experiments.
+- No higher-clock or additional-target compatibility claims are made here.
 
-## Quick-Start Guide (Windows Setup)
+See [HARDENING.md](HARDENING.md), [BUGS.md](BUGS.md) and
+[SWO_TESTING.md](SWO_TESTING.md) for implementation and qualification details.
 
-### Step 0: Prerequisite — Install USB/IP Drivers on Windows
-Before connecting Plink to your Windows PC, you must have the signed USB/IP UDE virtual host controller driver installed:
-1. Download the latest release installer from the official repository:
-   👉 **[USB/IP Client for Windows (WHLK Certified Driver)](https://github.com/vadimgrn/usbip-win2/releases)**
-2. Run the installer (e.g. `usbip-win2_x64_*.exe`) and complete the setup.
-   - *Default Installation Path:* `C:\Program Files\USBip\` (already configured in Plink tools).
-   - *Note:* All existing USB 3.0 hubs will momentarily restart during driver installation.
+## What changed
 
----
+| Area | ABI 2 implementation |
+|---|---|
+| USB/IP | Bounded queues, eight DAP replies, endpoint-specific pending reads, single cancellation completion |
+| Serial | 64 KiB receive/transmit rings per channel; retained short reads and partial sends; reconnectable local links |
+| Ownership | Shared C/Python advisory leases prevent duplicate pod access and overlapping flash/control operations |
+| SWD | Two FPGA engines; bounded completion waits; configurable turnaround/data phase; real pin release |
+| SWO | 32 KiB synchronous banked BRAM FIFO, atomic four-byte pop, loss/framing counters, independent 1 MiB software ring |
+| AXI-Lite | Independent AW/W acceptance and stable responses under backpressure |
+| Web | Overview, physical 2×12 connectors, pin inspector, dual serial console, programming confirmation, diagnostics |
+| Deployment | Verified matched releases, source/artifact hashes, maintenance locks and fail-closed rollback |
 
-### Step 1: Connect Plink (Choose Option A or Option B)
+The fabric remains at **100 MHz**. Divider configuration is not a measurement
+of external signal integrity or a guarantee of a particular cable/target speed.
 
-Ensure your Antminer T9+ board is powered on and connected via Ethernet (default IP: `192.168.2.99`). Then choose **either** the automatic tray app or manual batch script:
+## Web workspace
 
-#### Option A: Background Tray App (Recommended — Zero-Click Auto-Attach)
-1. Double-click **`plink-tray.exe`** (in the repository root).
-2. It sits quietly in the Windows notification tray with an embedded icon.
-3. As soon as the board is detected, it automatically attaches all hardware devices in the background with **zero terminal popups**:
-   - `Plink CMSIS-DAP v2` (WinUSB Hardware Debug Probe)
-   - `USB Serial Device (COM9)` (Primary Target UART0, 9600 to 921600+ baud)
-   - `USB Serial Device (COM10)` (Secondary Target UART1)
-4. *Tip:* Place a shortcut of `plink-tray.exe` in your Windows Startup folder (`Win + R` -> `shell:startup`) for fully automated connection every time you log into your PC.
+![Plink workspace, offline mock preview](docs/plink-overview.png)
 
-#### Option B: One-Click Batch Script (Manual Connection)
-1. Double-click **`attach_t9.bat`** (in the repository root).
-2. The script automatically:
-   - Pings `192.168.2.99` to ensure the board is reachable.
-   - Restarts the virtual USB root hub to flush any stale or duplicate ports.
-   - Attaches the CMSIS-DAP v2 probe and dual COM ports cleanly.
-3. Open your preferred IDE (**Keil µVision, IAR EWARM, STM32CubeIDE, OpenOCD, pyOCD**) and begin debugging immediately.
+After an approved deployment, open `http://192.168.2.99:8080`.
 
----
+- Read-only views distinguish unknown, backend-owned and stale measurements.
+- Select a pin in either connector to inspect its package pad and controls.
+- Serial console supports UART0 and UART1. Stream connection is explicit.
+- Target-changing POST requests require a bearer token. Use **Unlock controls**
+  and the token from `/etc/plink/api.token`; it stays only in page memory.
+- Programming uploads are binary-safe, limited to 16 MiB and uniquely named.
+  The UI asks for confirmation before starting a target write.
 
-### Step 2: Access the Web Dashboard & UART Flasher
-Open your browser and navigate to:
-```text
-http://192.168.2.99:8080
-```
-- **01 // Pin Mapping Matrix:** Interactive physical 2x12 pinout diagrams for Header J3 & J4 with live logic telemetry.
-- **02 // Target Programming:** High-speed firmware flasher for STM32 and ESP32 with real-time log streaming.
-- **03 // Target Console:** Web-based serial terminal for Target UART0 (`COM9`).
+The API itself binds to loopback by default; the installed systemd unit enables
+LAN access. Use a trusted isolated LAN, firewall, or HTTPS reverse proxy.
+Bearer authentication does **not** encrypt HTTP. USB/IP is also an unauthenticated
+trusted-network transport. Raw UART bridge ports now bind to loopback.
 
----
+For a safe local mock preview, with **no board access**:
 
-## Device Support & Testing Status
-
-| Device / Architecture | Protocol / Interface | Status | Test Details & Verification Notes |
-| :--- | :--- | :---: | :--- |
-| **STM32F407VG (Cortex-M4)** | SWD (CMSIS-DAP v2) | **TESTED & VERIFIED** | **100% verified** at 25.0 MHz. 1024 KiB flash programmed & verified via OpenOCD. Single-step debugged in IAR EWARM & pyOCD. |
-| **STM32F4 Series (F401, F405, F411, F429)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Same CoreSight ADIv5 debug architecture as F407. Uses standard STM32 flash loader algorithms. |
-| **STM32F1 Series (F103 "BluePill", F100, F105)** | SWD & UART Bootloader | **SUPPORTED** | SWD via OpenOCD; UART bootloader via onboard `stm32flash` on J3 pins 7/8. |
-| **STM32F0 / F2 / F3 / F7 Series** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard ARM SWD DPIDR / MEM-AP protocol. Verified protocol compliance. |
-| **STM32G0 / G4 / L0 / L1 / L4 / L5 Series** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Low-power Cortex-M0+/M4/M33. Fully supported via IDE flash algorithms. |
-| **STM32H7 Series (Dual/Single Core)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | CoreSight DPv2 / SWD multi-drop architecture compatible. |
-| **ESP32 (ESP-WROOM-32, ESP32-D0WD)** | UART ROM Bootloader | **SUPPORTED & TESTED** | Flashed via onboard `esptool.py v4.7.0` with automated IO0 (J3-15) and EN (J3-5) hardware reset. |
-| **ESP32-S2 / ESP32-S3 / ESP32-C3 / ESP32-C6** | UART ROM Bootloader | **SUPPORTED** | Fully supported by `esptool.py` over primary UART0 at up to 921,600 baud. |
-| **ESP8266 (ESP-01, ESP-12E/F)** | UART ROM Bootloader | **SUPPORTED** | Handshake via IO0 and RST pins using onboard `esptool.py`. |
-| **Raspberry Pi RP2040 / RP2350** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Multi-drop SWD supported by CMSIS-DAP v2 protocol. |
-| **Nordic nRF52832 / nRF52840** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Cortex-M4 SWD standard target. Compatible with Nordic nRF Command Line Tools. |
-| **NXP LPC / i.MX RT (Cortex-M7)** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard CoreSight debug port. Supported via MCUXpresso, Keil, and IAR. |
-| **Microchip SAMD21 / SAME54** | SWD (CMSIS-DAP v2) | **SUPPORTED** | Standard ARM CoreSight target. |
-| **WCH CH32V (RISC-V)** | Proprietary 1-Wire SDI | *NOT TESTED* | Non-standard 1-wire debug protocol. Requires dedicated SDI PHY core (planned Phase 2B). |
-
----
-
-## Hardware Pinout (Header J3)
-
-All SWD, UART, and target control lines are routed to the **J3 expansion header** (2x12 dual-row 2.54mm header, 3.3V LVCMOS on Banks 34 & 35):
-
-```text
- 1    3    5    7    9    11   13   15   17   19   21   23
- 2    4    6    8    10   12   14   16   18   20   22   24
-┌────────────────────────────────────────────────────────┐
-│GND  P16  T14  C20  GND  P14  GND  T15  T17  GND  M14  GND│
-│GND  P15  T10  B20  GND  R14  GND  VCC  R18  GND  M15  GND│
-└────────────────────────────────────────────────────────┘
+```powershell
+python tests/preview_ui.py
 ```
 
-| J3 Pin # | FPGA Pin | Signal Name | Target MCU Connection | Function & Electrical Characteristics |
-| :---: | :---: | :--- | :--- | :--- |
-| **Pin 1, 2** | `GND` | **GND** | **Target GND** | System Ground (Required) |
-| **Pin 3** | `P16` | **SWCLK** | **Target SWCLK** | SWD Clock Output (FPGA Core, 100 kHz - 25 MHz, 3.3V) |
-| **Pin 4** | `P15` | **SWDIO** | **Target SWDIO** | Bidirectional Data Line (FPGA Core, 3.3V with PULLUP) |
-| **Pin 5** | `T14` | **nRST / EN** | **Target nRST / ESP32 EN** | Open-Drain Reset Line (Active Low, 50ms hardware pulse) |
-| **Pin 6** | `T10` | **BOOT0** | **STM32 BOOT0** | Hardware Bootloader Select (High: ROM, Low: User Flash) |
-| **Pin 7** | `C20` | **UART0_TX**| **Target RXD** | Primary UART TX (Zynq PS `/dev/ttyPS1`, 9600-921600 baud) |
-| **Pin 8** | `B20` | **UART0_RX**| **Target TXD** | Primary UART RX (Zynq PS `/dev/ttyPS1`, 9600-921600 baud) |
-| **Pin 11**| `P14` | **UART1_TX**| **Auxiliary RXD** | Secondary UART TX (AXI UARTLite, 115200 baud) |
-| **Pin 12**| `R14` | **UART1_RX**| **Auxiliary TXD** | Secondary UART RX (AXI UARTLite, 115200 baud) |
-| **Pin 15**| `T15` | **IO0** | **ESP32 GPIO0** | Auto-Download Bootloader Handshake for ESP32 |
-| **Pin 16**| `VCC` | **VCC** | *(Optional)* | 3.3V Power Output |
+Open the localhost URL it prints. All writes are rejected in this preview.
 
----
+## Wiring
 
-## Baud Rate Support & Characteristics
+All target signals are **3.3 V logic**, not 5 V tolerant. Share target ground.
+The canonical signal mapping is [`hardware/pinmap.json`](hardware/pinmap.json);
+unmapped contacts must not be treated as spare GPIO or assumed power pins.
 
-| Channel | Physical Interface | Baud Rate Range | Implementation & Constraints |
-| :--- | :--- | :--- | :--- |
-| **Primary UART0** | J3 Pins 7 & 8 | **9,600 to 921,600+ baud** (Dynamic) | Driven by Zynq PS hardware UART controller (`/dev/ttyPS1`). Full dynamic clock divisor supporting all standard baud rates. Bridged to native Windows `COMx` and TCP `:2000`. |
-| **Secondary UART1**| J3 Pins 11 & 12| **115,200 baud** (Fixed) | Driven by AXI UARTLite PL core. Fixed clock divider synthesized in bitstream. Bridged to TCP `:2001`. |
+| Header contact | FPGA pad | Signal |
+|---|---|---|
+| J3.1 / J3.2 | — | Ground reference |
+| J3.3 | P16 | SWCLK · pod 1 |
+| J3.4 | P15 | SWDIO · pod 1 |
+| J3.5 | T14 | nRST, released as open drain |
+| **J3.6** | **T10** | **SWO input ← STM32 PB3** |
+| J3.7 / J3.8 | C20 / B20 | UART0 TX / RX, from probe perspective |
+| J3.11 / J3.12 | P14 / R14 | UART1 TX / RX, from probe perspective |
+| J3.15 | T15 | Auxiliary IO0 |
+| J4.3 / J4.4 | V18 / V17 | SWCLK / SWDIO · pod 2 |
+| J4.5 / J4.6 | Y16 / T16 | nRST / dedicated trace input contact |
+| J4.7 / J4.8 | E17 / D18 | Auxiliary IO8 / IO9 |
+
+**Do not drive T10 as BOOT0 while it is connected to PB3.** Default configuration
+reserves it for SWO. STM32 UART bootloader handshakes require explicit rewiring
+and board-side configuration; the web UI cannot bypass this guard.
+The current DAP capture path uses J3 SWO; a J4 trace contact does not imply a
+second independently exposed trace stream.
+
+## Build, test and release
+
+Offline checks:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+python scripts/check_pinmap.py
+```
+
+Run `go test ./...` in `plink-tray`. C transport, DAP and SWO ring tests run on
+Linux/WSL; RTL simulation and BRAM synthesis use Vivado. See
+[HARDENING.md](HARDENING.md) for commands and dependencies.
+
+Build a new matched release with Vivado:
+
+```powershell
+vivado -mode batch -source vivado/build_programmer_bitstream.tcl
+```
+
+This recreates the generated project, checks the pin map, snapshots source
+hashes and packages `.bit`, `.hwh`, PCAP and manifest into `releases/<timestamp>`.
+Packaging rejects source changes made during the build.
+
+Verify without deploying:
+
+```powershell
+.\deploy_to_board.ps1 -ReleasePath .\releases\<timestamp>
+```
+
+**Deployment is a separate live operation**, requiring explicit approval:
+
+```powershell
+.\deploy_to_board.ps1 -ReleasePath .\releases\<timestamp> -AllowLiveHardware
+```
+
+It stages/builds before stopping clients, installs under `/opt/plink/releases`,
+switches `/opt/plink/current`, and loads only a verified release. MMIO clients
+require `/run/plink/fpga-ready` containing `plink-abi-2`.
+Failure leaves clients stopped rather than reattaching Windows devices.
+
+The repository-root `t9_programmer_pcap.bin` is a **legacy unmatched artifact**,
+not a deployment input. Use only generated release directories.
+
+Windows tray source is in `plink-tray/`; both checked-in tray executables are
+rebuilt from the hardened source without launching them. Attaching Windows
+USB/IP devices is not part of testing, publishing or deployment.

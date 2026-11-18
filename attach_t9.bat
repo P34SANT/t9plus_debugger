@@ -13,10 +13,12 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo [*] Flushing existing attachments to prevent duplicates...
-taskkill /F /IM usbip.exe >nul 2>&1
-pnputil /restart-device "ROOT\USB\0000" >nul 2>&1
-ping 127.0.0.1 -n 2 >nul 2>&1
+echo [*] Checking existing attachment...
+"C:\Program Files\USBip\usbip.exe" port | findstr /c:"usbip://192.168.2.99:3240/1-1" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo [*] Already attached. No reset or reconnect performed.
+    exit /b 0
+)
 
 echo [*] Attaching Plink composite device (busid 1-1)...
 "C:\Program Files\USBip\usbip.exe" attach --once -r 192.168.2.99 -b 1-1

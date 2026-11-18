@@ -10,7 +10,7 @@ It exposes standard USB bulk endpoints (WinUSB) natively over IP, allowing IDEs 
 
 - **Standard CMSIS-DAP v2 Protocol**: Full compatibility with IAR Embedded Workbench, Keil MDK, VS Code Cortex-Debug, STM32CubeIDE, CLion, and OpenOCD.
 - **Direct Zynq EMIO SWD Driver**: High-speed memory-mapped GPIO register driving with calibrated cycle-accurate Cortex-A9 timing.
-- **Hardware Reset Control (`nRST`)**: Target hardware reset on J3 Pin 3 driven via Zynq EMIO GPIO 56.
+- **Hardware Reset Control (`nRST`)**: Target hardware reset on J3 Pin 5 driven via Zynq EMIO GPIO 56.
 - **Active-Low User LEDs**: Bitstream natively inverts LED outputs (`~(cnt > 0)`) so onboard LEDs D4, D5, D6, D7 remain turned OFF when idle and pulse only on UART traffic.
 - **No BOOT0 Requirement**: Target BOOT0 pin is completely untouched.
 - **Automatic Systemd Service**: Runs on boot as `t9-cmsis-dap.service` on TCP port 3240.
@@ -21,12 +21,14 @@ It exposes standard USB bulk endpoints (WinUSB) natively over IP, allowing IDEs 
 
 | Pin | Signal | Zynq EMIO Pin | Description |
 |-----|--------|---------------|-------------|
-| **J3 Pin 1** | `SWCLK` | GPIO 54 (Bank 2, Bit 0) | SWD Clock |
-| **J3 Pin 2** | `SWDIO` | GPIO 55 (Bank 2, Bit 1) | Bidirectional SWD Data |
-| **J3 Pin 3** | `nRST`  | GPIO 56 (Bank 2, Bit 2) | Target Hardware Reset |
-| **J3 Pin 5** | `GND`   | Ground        | Common Reference Ground |
+| **J3 Pin 3** | `SWCLK` | GPIO 54 (Bank 2, Bit 0) | SWD Clock |
+| **J3 Pin 4** | `SWDIO` | GPIO 55 (Bank 2, Bit 1) | Bidirectional SWD Data |
+| **J3 Pin 5** | `nRST`  | GPIO 56 (Bank 2, Bit 2) | Target Hardware Reset |
+| **J3 Pin 6** | `SWO`   | GPIO 57 (Bank 2, Bit 3) | Input; not BOOT0 while connected to PB3 |
+| **J3 Pins 1/2** | `GND` | Ground | Common Reference Ground |
 
-*(Pins J3.4, J3.6, etc., provide 3.3V power, auxiliary UARTs, and user I/Os).*
+The canonical mapping is `hardware/pinmap.json`. Never infer supply pins from
+older documentation. All target signals are 3.3 V; this is not a 5 V probe.
 
 ---
 

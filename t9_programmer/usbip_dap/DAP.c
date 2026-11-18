@@ -32,6 +32,9 @@
 #include <stdbool.h>
 #include "DAP_config.h"
 #include "DAP.h"
+#include "swo_capture.h"
+#include "../common/swd_backend.h"
+#include "dap_validate.h"
 
 /*- Definitions -------------------------------------------------------------*/
 #define ARRAY_SIZE(x)  ((int)(sizeof(x) / sizeof(0[x])))
@@ -235,6 +238,15 @@ static int dap_match_retry_count;
 static int dap_clock_delay;
 struct timespec dap_last_prog_ts = {0, 0};
 
+// SWO Trace state (backed by axi_swo_engine @ 0x43C20000)
+static bool swo_active;            // Capture running
+static uint8_t swo_transport;      // 0=none, 1=SWO_Data command
+static uint8_t swo_mode;           // 0=off, 1=UART
+static struct {
+  uint64_t commands, attempts, waits, faults, errors, max_command_ns;
+  uint32_t clock_hz;
+} metrics;
+
 static void (*dap_swj_run)(int);
 static void (*dap_swd_write)(uint32_t, int);
 static uint32_t (*dap_swd_read)(int);
@@ -337,7 +349,6 @@ DAP_SWJ_FN(fast, (void))
   }
 
 DAP_SWD_FN(slow, DAP_CONFIG_DELAY)
-DAP_SWD_FN(fast, (void))
 
 //-----------------------------------------------------------------------------
 static inline uint32_t dap_parity(uint32_t value)
@@ -355,53 +366,11 @@ static int dap_swd_operation(int req, uint32_t *data)
 {
   if (swd_hw_available && swd_hw_mem)
   {
-    int rnw   = (req & DAP_TRANSFER_RnW) ? 1 : 0;
-    int apndp = (req & DAP_TRANSFER_APnDP) ? 1 : 0;
-    int addr  = (req >> 2) & 3; // A[3:2]
-
-    if (!rnw && data) {
-      swd_hw_mem[SWD_REG_WDATA / 4] = *data;
-    }
-
-    int idle = (dap_idle_cycles > 8) ? dap_idle_cycles : 8;
+    int idle = dap_idle_cycles;
+    if (swd_hw_mem[SWD_REG_ID / 4] == 0x53574401 && idle < 8) idle = 8;
     if (idle > 31) idle = 31;
-
-    // Launch hardware transaction:
-    // bit 15: HW_EN
-    // bit 12:8: IDLE_CYCLES
-    // bit 4:3: ADDR
-    // bit 2: RnW
-    // bit 1: APnDP
-    // bit 0: START
-    uint32_t ctrl = (1 << 15) | (idle << 8) | (addr << 3) | (rnw << 2) | (apndp << 1) | 1;
-    swd_hw_mem[SWD_REG_CTRL / 4] = ctrl;
-
-    // Wait for hardware completion (busy = bit 0 of STATUS)
-    uint32_t st = 0;
-    for (int timeout = 0; timeout < 100000; timeout++) {
-      st = swd_hw_mem[SWD_REG_STATUS / 4];
-      if ((st & 1) == 0) break;
-    }
-
-    if (st & 1) {
-      // Hardware FSM did not complete in time
-      return DAP_TRANSFER_ERROR;
-    }
-
-    int ack     = (st >> 1) & 0x07;
-    int par_err = (st >> 4) & 1;
-
-    if (ack == DAP_TRANSFER_OK) {
-      if (rnw) {
-        if (par_err) {
-          ack = DAP_TRANSFER_ERROR;
-        } else if (data) {
-          *data = swd_hw_mem[SWD_REG_RDATA / 4];
-        }
-      }
-    }
-
-    return ack;
+    return swd_hw_transfer(swd_hw_mem, req, data, idle,
+                           dap_swd_turnaround, dap_swd_data_phase);
   }
 
   uint32_t value;
@@ -679,10 +648,11 @@ static void dap_setup_clock(int freq)
   if (swd_hw_available && swd_hw_mem) {
     // Dynamic hardware clock scaling:
     // F_SWCLK = 100MHz / (2 * (div + 1))
-    int div = (100000000 / (2 * freq)) - 1;
+    int div = ((100000000 + 2 * freq - 1) / (2 * freq)) - 1;
     if (div < 1) div = 1;       // Max 25 MHz
     if (div > 65535) div = 65535;
     swd_hw_mem[SWD_REG_CLK_DIV / 4] = div;
+    metrics.clock_hz = 100000000u / (2 * (div + 1));
   }
 
   int sw_freq = (freq > 2000000) ? 2000000 : freq;
@@ -726,7 +696,7 @@ static bool dap_select_device(int index)
 static int dap_transfer_word(int req, uint32_t *data)
 {
   int ack = DAP_TRANSFER_INVALID;
-  int retries = (dap_retry_count > 100) ? dap_retry_count : 100;
+  int retries = dap_retry_count + 1;
 
   for (int i = 0; i < retries; i++)
   {
@@ -738,10 +708,14 @@ static int dap_transfer_word(int req, uint32_t *data)
       ack = dap_jtag_operation(req, data);
 #endif
 
+    ++metrics.attempts;
+    if (ack == DAP_TRANSFER_WAIT) ++metrics.waits;
+    else if (ack == DAP_TRANSFER_FAULT) ++metrics.faults;
+    else if (ack != DAP_TRANSFER_OK) ++metrics.errors;
     if (DAP_TRANSFER_WAIT != ack || dap_abort)
       break;
 
-    dap_delay_us(10);
+    /* The configured idle clocks are the delay; no scheduler-sized sleep per WAIT. */
   }
 
   return ack;
@@ -855,6 +829,20 @@ void dap_resp_add_word(uint32_t value)
 }
 
 //-----------------------------------------------------------------------------
+void dap_resp_add_half(uint16_t value)
+{
+  if (dap_buf_error || ((dap_resp_size - dap_resp_ptr) < (int)sizeof(uint16_t)))
+  {
+    dap_buf_error = true;
+    return;
+  }
+
+  dap_resp_buf[dap_resp_ptr + 0] = value;
+  dap_resp_buf[dap_resp_ptr + 1] = value >> 8;
+  dap_resp_ptr += sizeof(uint16_t);
+}
+
+//-----------------------------------------------------------------------------
 void dap_resp_set_byte(int index, uint8_t value)
 {
   if (index < dap_resp_ptr)
@@ -878,8 +866,15 @@ static void dap_info(void)
 #ifdef DAP_CONFIG_ENABLE_JTAG
     cap |= DAP_CAP_JTAG;
 #endif
+    if (swo_hw_available)
+      cap |= DAP_CAP_SWO_UART;
     dap_resp_add_byte(1);
     dap_resp_add_byte(cap);
+  }
+  else if (DAP_INFO_SWO_BUF_SIZE == index)
+  {
+    dap_resp_add_byte(4);
+    dap_resp_add_word(swo_hw_available ? SWO_FIFO_SIZE : 0);
   }
   else if (DAP_INFO_PACKET_COUNT == index)
   {
@@ -977,7 +972,7 @@ static void dap_transfer(void)
 {
   int req_count, resp_count, request, ack;
   bool posted_read, verify_write;
-  uint32_t data, match_value;
+  uint32_t data = 0, match_value;
 
   dap_resp_add_byte(0); // Count
   dap_resp_add_byte(DAP_TRANSFER_INVALID);
@@ -1027,7 +1022,7 @@ static void dap_transfer(void)
         if (dap_needs_posted_read(request))
           dap_transfer_word(request, NULL);
 
-        for (int i = 0; i < dap_match_retry_count; i++)
+        for (int i = 0; i <= dap_match_retry_count; i++)
         {
           ack = dap_transfer_word(request, &data);
 
@@ -1086,7 +1081,7 @@ static void dap_transfer(void)
     if (posted_read)
     {
       ack = dap_transfer_word(SWD_DP_R_RDBUFF | DAP_TRANSFER_RnW, &data);
-      dap_resp_add_word(data);
+      if (ack == DAP_TRANSFER_OK) dap_resp_add_word(data);
     }
     else if (verify_write)
     {
@@ -1201,8 +1196,8 @@ static void dap_write_abort(void)
 
   if (DAP_PORT_SWD == dap_port)
   {
-    dap_swd_operation(SWD_DP_W_ABORT, &data);
-    status = DAP_OK;
+    if (dap_swd_operation(SWD_DP_W_ABORT, &data) == DAP_TRANSFER_OK)
+      status = DAP_OK;
   }
 
 #ifdef DAP_CONFIG_ENABLE_JTAG
@@ -1296,14 +1291,13 @@ static void dap_swj_sequence(void)
 
   if (swd_hw_available && swd_hw_mem) {
     while (size > 0) {
-      int sz = (size > 8) ? 8 : size;
-      uint8_t byte_val = dap_req_get_byte();
-      swd_hw_mem[SWD_REG_WDATA / 4] = byte_val;
-      swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
-      // HW_EN=1 (bit 15), RAW_MODE=1 (bit 14), START=1 (bit 0)
-      swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
-      for (int t = 0; t < 100000; t++) {
-        if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
+      int sz = (size > 32) ? 32 : size;
+      uint32_t bits = 0;
+      for (int byte = 0; byte < (sz + 7) / 8; ++byte)
+        bits |= (uint32_t)dap_req_get_byte() << (byte * 8);
+      if (swd_hw_raw(swd_hw_mem, &bits, sz, 0) != 0) {
+        dap_resp_add_byte(DAP_ERROR);
+        return;
       }
       size -= sz;
     }
@@ -1324,9 +1318,199 @@ static void dap_swj_sequence(void)
 }
 
 //-----------------------------------------------------------------------------
+// SWO Trace Engine (axi_swo_engine.v @ 0x43C20000)
+//-----------------------------------------------------------------------------
+
+static void dap_swo_transport(void)
+{
+  int transport = dap_req_get_byte(); // 0=none, 1=SWO_Data command, 2=stream endpoint
+  if (dap_buf_error || swo_active || transport > 1)
+  {
+    dap_resp_add_byte(DAP_ERROR);
+    return;
+  }
+  swo_transport = transport;
+  dap_resp_add_byte(DAP_OK);
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_mode(void)
+{
+  int mode = dap_req_get_byte(); // 0=off, 1=UART, 2=Manchester
+
+  if (dap_buf_error || !swo_hw_available || !swo_hw_mem)
+  {
+    dap_resp_add_byte(DAP_ERROR);
+    return;
+  }
+
+  if (mode == 1) // UART (NRZ) - hardware supports this
+  {
+    swo_capture_stop();
+    swo_active = false;
+    swo_mode = 1;
+    dap_resp_add_byte(DAP_OK);
+  }
+  else if (mode == 0) // Off
+  {
+    swo_capture_stop();
+    swo_active = false;
+    swo_mode = 0;
+    dap_resp_add_byte(DAP_OK);
+  }
+  else // Manchester unsupported
+  {
+    dap_resp_add_byte(DAP_ERROR);
+  }
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_baudrate(void)
+{
+  uint32_t baud = dap_req_get_word();
+  uint32_t actual = 0;
+
+  if (dap_buf_error || !baud || !swo_hw_available || !swo_hw_mem)
+  {
+    dap_resp_add_word(0);
+    return;
+  }
+
+  if (swo_active) { dap_resp_add_word(0); return; }
+  uint32_t div = (uint32_t)(((uint64_t)SWO_FPGA_CLOCK + baud / 2) / baud);
+  if (div < 10)       div = 10;      // Max ~10 Mbps
+  if (div > 10416)    div = 10416;   // Min ~9600 baud
+  swo_hw_mem[SWO_REG_CLK_DIV / 4] = div;
+  actual = SWO_FPGA_CLOCK / div;
+
+  dap_resp_add_word(actual);
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_control(void)
+{
+  int control = dap_req_get_byte(); // 0=stop, 1=start
+
+  if (dap_buf_error || !swo_hw_available || !swo_hw_mem)
+  {
+    dap_resp_add_byte(DAP_ERROR);
+    return;
+  }
+
+  if (control == 1) // START
+  {
+    if (dap_buf_error || swo_mode != 1 || swo_transport != 1 ||
+        zynq_swo_release_pin() != 0)
+    {
+      dap_resp_add_byte(DAP_ERROR);
+      return;
+    }
+    if (swo_active)
+    {
+      dap_resp_add_byte(DAP_OK);
+      return;
+    }
+    // Reset the received-bytes counter via flush, then enable capture
+    swo_capture_start();
+    swo_active = true;
+  }
+  else if (control == 0) // STOP
+  {
+    swo_capture_stop();
+    swo_active = false;
+  }
+  else
+  {
+    dap_resp_add_byte(DAP_ERROR);
+    return;
+  }
+
+  dap_resp_add_byte(DAP_OK);
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_status(void)
+{
+  swo_capture_stats stats;
+  swo_capture_snapshot(&stats);
+  dap_resp_add_byte(stats.status);
+  dap_resp_add_word(stats.buffered);
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_ext_status(void)
+{
+  // Request bits select status (0) and 32-bit count (1).
+  // Timestamp capture is not advertised or supported.
+  uint8_t fields = dap_req_get_byte();
+
+  swo_capture_stats stats;
+  swo_capture_snapshot(&stats);
+  if (fields & 1) dap_resp_add_byte(stats.status);
+  if (fields & 2) dap_resp_add_word(stats.buffered);
+}
+
+//-----------------------------------------------------------------------------
+static void dap_swo_data(void)
+{
+  uint16_t max_count = dap_req_get_half(); // Max bytes host accepts
+  if (dap_buf_error || dap_resp_size - dap_resp_ptr < 3) return;
+  size_t space = dap_resp_size - dap_resp_ptr - 3;
+  if (space > max_count) space = max_count;
+  size_t start = dap_resp_ptr;
+  size_t num = swo_transport == 1 ?
+      swo_capture_read(dap_resp_buf + start + 3, space) : 0;
+  swo_capture_stats stats;
+  swo_capture_snapshot(&stats);
+  dap_resp_add_byte(stats.status);
+  dap_resp_add_half(num);
+  dap_resp_ptr += num;
+}
+
+//-----------------------------------------------------------------------------
+// Background poll hook: reserved for FIFO drain (hardware FIFO handled on demand)
+void dap_swo_poll(void)
+{
+  /* Drain runs independently in swo_capture.c, including during SWD waits. */
+}
+
+void dap_session_close(void)
+{
+  swo_capture_shutdown();
+  swo_active = false;
+  swo_mode = swo_transport = 0;
+  dap_port = DAP_PORT_DISABLED;
+  DAP_CONFIG_DISCONNECT();
+}
+
+void dap_write_stats(FILE *file)
+{
+  swo_capture_stats stats;
+  swo_capture_snapshot(&stats);
+  fprintf(file, "{\"schema\":1,\"active\":%s,\"clock_hz\":%u,"
+          "\"commands\":%llu,\"swd_attempts\":%llu,\"waits\":%llu,"
+          "\"faults\":%llu,\"errors\":%llu,\"max_command_us\":%llu,"
+          "\"swo\":{\"buffered\":%u,\"high_water\":%u,\"hardware_high_water\":%u,"
+          "\"received\":%llu,\"software_dropped\":%llu,\"hardware_dropped\":%u,"
+          "\"framing_errors\":%u,\"status\":%u}}\n",
+          dap_port ? "true" : "false", metrics.clock_hz,
+          (unsigned long long)metrics.commands, (unsigned long long)metrics.attempts,
+          (unsigned long long)metrics.waits, (unsigned long long)metrics.faults,
+          (unsigned long long)metrics.errors, (unsigned long long)(metrics.max_command_ns / 1000),
+          stats.buffered, stats.high_water, stats.hardware_high_water,
+          (unsigned long long)stats.received, (unsigned long long)stats.software_dropped,
+          stats.hardware_dropped, stats.framing_errors, stats.status);
+}
+
+//-----------------------------------------------------------------------------
 static void dap_swd_configure(void)
 {
   int data = dap_req_get_byte();
+  if (swd_hw_available && swd_hw_mem &&
+      swd_hw_mem[SWD_REG_ID / 4] == 0x53574401 && (data & 7)) {
+    dap_resp_add_byte(DAP_ERROR); /* Legacy RTL cannot implement this configuration. */
+    return;
+  }
 
   dap_swd_turnaround = (data & 3) + 1;
   dap_swd_data_phase = (data & 4) ? 1 : 0;
@@ -1359,32 +1543,20 @@ static void dap_swd_sequence(void)
       count = 64U;
 
     if (swd_hw_available && swd_hw_mem) {
-      if (din) {
-        while (count) {
-          int sz = (count > 8) ? 8 : count;
-          swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
-          // HW_EN=1 (bit 15), RAW_DIR=1 (read, bit 16), RAW_MODE=1 (bit 14), START=1 (bit 0)
-          swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 16) | (1 << 15) | (1 << 14) | 1;
-          for (int t = 0; t < 100000; t++) {
-            if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
-          }
-          int value = swd_hw_mem[SWD_REG_RDATA / 4] & 0xFF;
-          dap_resp_add_byte(value);
-          count -= sz;
+      while (count) {
+        int sz = count > 32 ? 32 : count;
+        uint32_t bits = 0;
+        if (!din)
+          for (int byte = 0; byte < (sz + 7) / 8; ++byte)
+            bits |= (uint32_t)dap_req_get_byte() << (byte * 8);
+        if (swd_hw_raw(swd_hw_mem, &bits, sz, din) != 0) {
+          dap_resp_set_byte(1, DAP_ERROR);
+          return;
         }
-      } else {
-        while (count) {
-          int sz = (count > 8) ? 8 : count;
-          uint8_t byte_val = dap_req_get_byte();
-          swd_hw_mem[SWD_REG_WDATA / 4] = byte_val;
-          swd_hw_mem[SWD_REG_RAW_LEN / 4] = sz;
-          // HW_EN=1 (bit 15), RAW_DIR=0 (write), RAW_MODE=1 (bit 14), START=1 (bit 0)
-          swd_hw_mem[SWD_REG_CTRL / 4] = (1 << 15) | (1 << 14) | 1;
-          for (int t = 0; t < 100000; t++) {
-            if ((swd_hw_mem[SWD_REG_STATUS / 4] & 1) == 0) break;
-          }
-          count -= sz;
-        }
+        if (din)
+          for (int byte = 0; byte < (sz + 7) / 8; ++byte)
+            dap_resp_add_byte(bits >> (byte * 8));
+        count -= sz;
       }
     }
     else if (din)
@@ -1537,10 +1709,11 @@ static void dap_jtag_idcode(void)
 //-----------------------------------------------------------------------------
 void dap_init(void)
 {
+  memset(&metrics, 0, sizeof(metrics));
   dap_port              = DAP_PORT_DISABLED;
   dap_abort             = false;
   dap_match_mask        = 0;
-  dap_idle_cycles       = 0;
+  dap_idle_cycles       = 8;
   dap_retry_count       = 100;
   dap_match_retry_count = 100;
   dap_swd_turnaround    = 1;
@@ -1552,6 +1725,12 @@ void dap_init(void)
   dap_setup_clock(DAP_CONFIG_DEFAULT_CLOCK);
 
   DAP_CONFIG_SETUP();
+  dap_setup_clock(DAP_CONFIG_DEFAULT_CLOCK);
+  swo_active = false;
+  swo_mode = swo_transport = 0;
+  if (swo_hw_available &&
+      swo_capture_init(swo_hw_mem, swo_hw_mem[SWO_REG_ID / 4] & 0xFF) != 0)
+    swo_hw_available = false;
 }
 
 //-----------------------------------------------------------------------------
@@ -1571,6 +1750,12 @@ bool dap_filter_request(uint8_t *req)
 //-----------------------------------------------------------------------------
 int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size)
 {
+  if (!resp || resp_size < 2) return 0;
+  if (req_size < 0 || !dap_request_valid(req, req_size)) {
+    resp[0] = req && req_size > 0 ? req[0] : ID_DAP_INVALID;
+    resp[1] = DAP_ERROR;
+    return 2;
+  }
   static const struct
   {
     int    cmd;
@@ -1593,6 +1778,13 @@ int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size
     { ID_DAP_SWJ_SEQUENCE,		dap_swj_sequence },
     { ID_DAP_SWD_CONFIGURE,		dap_swd_configure },
     { ID_DAP_SWD_SEQUENCE,		dap_swd_sequence },
+    { ID_DAP_SWO_TRANSPORT,		dap_swo_transport },
+    { ID_DAP_SWO_MODE,			dap_swo_mode },
+    { ID_DAP_SWO_BAUDRATE,		dap_swo_baudrate },
+    { ID_DAP_SWO_CONTROL,		dap_swo_control },
+    { ID_DAP_SWO_STATUS,		dap_swo_status },
+    { ID_DAP_SWO_EXT_STATUS,		dap_swo_ext_status },
+    { ID_DAP_SWO_DATA,			dap_swo_data },
     { ID_DAP_JTAG_SEQUENCE,		dap_jtag_sequence },
     { ID_DAP_JTAG_CONFIGURE,		dap_jtag_configure },
     { ID_DAP_JTAG_IDCODE,		dap_jtag_idcode },
@@ -1620,7 +1812,11 @@ int dap_process_request(uint8_t *req, int req_size, uint8_t *resp, int resp_size
   {
     if (cmd == handlers[i].cmd)
     {
+      uint64_t started = swd_monotonic_ns();
       handlers[i].handler();
+      uint64_t elapsed = swd_monotonic_ns() - started;
+      ++metrics.commands;
+      if (elapsed > metrics.max_command_ns) metrics.max_command_ns = elapsed;
       return dap_resp_ptr;
     }
   }

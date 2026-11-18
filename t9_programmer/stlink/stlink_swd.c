@@ -10,11 +10,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include "stlink_swd.h"
+#include "../common/swd_backend.h"
 
 #define GPIO_BASE           0xE000A000
 #define MASK_DATA_2_LSW     0x0010
@@ -44,6 +46,7 @@
 #define DEMCR               0xE000EDFC
 
 static volatile uint32_t *gpio = NULL;
+static volatile uint32_t *hardware = NULL;
 
 static inline void set_pin(int pin, int val) {
     uint32_t mask = (~(1 << pin)) & 0xFFFF;
@@ -110,44 +113,79 @@ static inline uint32_t parity(uint32_t val) {
 
 int stlink_swd_init(void) {
     if (gpio != NULL) return 0;
+    FILE *marker = fopen("/run/plink/fpga-ready", "r");
+    char abi[32] = {0};
+    if (!marker) return -1;
+    int verified = fgets(abi, sizeof(abi), marker) && !strcmp(abi, "plink-abi-2\n");
+    fclose(marker);
+    if (!verified) return -1;
+    FILE *state = fopen("/sys/class/fpga_manager/fpga0/state", "r");
+    char value[32] = {0};
+    if (!state) return -1;
+    int ready = fgets(value, sizeof(value), state) && !strncmp(value, "operating", 9);
+    fclose(state);
+    if (!ready) return -1;
     int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) return -1;
+    hardware = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0x43C10000);
+    if (hardware == MAP_FAILED) { hardware = NULL; close(fd); return -1; }
+    if (hardware[0x18 / 4] != 0x53574401 && hardware[0x18 / 4] != 0x53574402) {
+        munmap((void *)hardware, 4096); hardware = NULL; close(fd); return -1;
+    }
+    hardware[0x04 / 4] = 24; /* Same 2 MHz default as Pod 1. */
     gpio = (volatile uint32_t *)mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, GPIO_BASE);
     close(fd);
     if (gpio == MAP_FAILED) {
         gpio = NULL;
+        munmap((void *)hardware, 4096);
+        hardware = NULL;
         return -1;
     }
 
-    dir_out(PIN_CLK1);
-    dir_out(PIN_DIO1);
+    hardware[0] = (1u << 17) | (1u << 15);
+    dir_in(PIN_CLK1);
+    dir_in(PIN_DIO1);
     dir_in(PIN_RST1); // Reset released (external pullup)
     clk_high();
     dio_high();
 
-    stlink_swd_line_reset();
+    if (stlink_swd_line_reset()) {
+        stlink_swd_close();
+        return -1;
+    }
     return 0;
 }
 
 void stlink_swd_close(void) {
     if (!gpio) return;
+    if (hardware) hardware[0] = (1u << 17) | (1u << 15);
     dir_in(PIN_CLK1);
     dir_in(PIN_DIO1);
     dir_in(PIN_RST1);
+    munmap((void *)gpio, 4096);
+    munmap((void *)hardware, 4096);
+    gpio = hardware = NULL;
 }
 
 void stlink_swd_reset_target(int ms) {
     if (!gpio) return;
-    dir_out(PIN_RST1);
     set_pin(PIN_RST1, 0);
+    dir_out(PIN_RST1);
     usleep(ms * 1000);
-    set_pin(PIN_RST1, 1);
     dir_in(PIN_RST1);
     usleep(25000);
 }
 
 int stlink_swd_line_reset(void) {
     if (!gpio) return -1;
+    if (hardware) {
+        uint32_t sequences[] = {0xFFFFFFFF, 0xFFFFFFFF, 0xE79E,
+                                0xFFFFFFFF, 0xFFFFFFFF, 0};
+        unsigned lengths[] = {32, 32, 16, 32, 32, 8};
+        for (unsigned i = 0; i < 6; ++i)
+            if (swd_hw_raw(hardware, &sequences[i], lengths[i], 0)) return -1;
+        return 0;
+    }
     dir_out(PIN_DIO1);
     dio_high();
 
@@ -174,6 +212,16 @@ int stlink_swd_line_reset(void) {
 }
 
 static int swd_transaction(int rnw, int apndp, int addr, uint32_t *data) {
+    if (hardware) {
+        unsigned request = ((addr >> 2) & 3) << 2 | (rnw ? 2 : 0) | (apndp ? 1 : 0);
+        int ack = 8;
+        for (int retry = 0; retry <= 100; ++retry) {
+            ack = swd_hw_transfer(hardware, request, data, 8, 1, 0);
+            if (ack != 2) break; /* Only WAIT is safe to retry. */
+        }
+        return ack;
+    }
+    if (!gpio) return 8;
     // Packet Header: [Start=1, APnDP, RnW, A2, A3, Parity, Stop=0, Park=1]
     uint32_t req = ((addr >> 2) & 3) << 2 | (rnw ? 2 : 0) | (apndp ? 1 : 0);
     uint32_t par = parity(req);
@@ -212,7 +260,7 @@ static int swd_transaction(int rnw, int apndp, int addr, uint32_t *data) {
             val |= ((uint32_t)swd_read_bit() << i);
         }
         int read_par = swd_read_bit();
-        if (parity(val) != read_par) {
+        if (parity(val) != (uint32_t)read_par) {
             ack = 4; // Parity fault
         }
         if (data) *data = val;
@@ -247,53 +295,57 @@ int stlink_swd_read_dpidr(uint32_t *dpidr) {
 }
 
 int stlink_swd_read_mem32(uint32_t addr, uint16_t count, uint32_t *data_out) {
-    if (!gpio || count == 0) return -1;
+    if (!gpio || !data_out || count == 0 || (addr & 3)) return -1;
 
     // Select AP 0, Bank 0
     uint32_t select = 0x00000000;
-    swd_transaction(0, 0, DP_REG_SELECT, &select);
+    if (swd_transaction(0, 0, DP_REG_SELECT, &select) != 1) return -1;
 
     // Set CSW: 32-bit incrementing transfer
     uint32_t csw = 0x23000052;
-    swd_transaction(0, 1, AP_REG_CSW, &csw);
+    if (swd_transaction(0, 1, AP_REG_CSW, &csw) != 1) return -1;
 
-    // Set TAR
-    swd_transaction(0, 1, AP_REG_TAR, &addr);
-
-    // Pipelined read
-    uint32_t dummy;
-    swd_transaction(1, 1, AP_REG_DRW, &dummy);
-
-    for (uint16_t i = 0; i < count; i++) {
-        if (i == count - 1) {
-            // Last word: read RDBUFF
-            swd_transaction(1, 0, DP_REG_RDBUFF, &data_out[i]);
-        } else {
-            swd_transaction(1, 1, AP_REG_DRW, &data_out[i]);
+    while (count) {
+        unsigned chunk = (1024 - (addr & 1023)) / 4;
+        if (chunk > count) chunk = count;
+        if (swd_transaction(0, 1, AP_REG_TAR, &addr) != 1) return -1;
+        uint32_t dummy;
+        if (swd_transaction(1, 1, AP_REG_DRW, &dummy) != 1) return -1;
+        for (unsigned i = 0; i < chunk; ++i) {
+            int ap = i + 1 != chunk;
+            if (swd_transaction(1, ap, ap ? AP_REG_DRW : DP_REG_RDBUFF,
+                                &data_out[i]) != 1) return -1;
         }
+        addr += chunk * 4; data_out += chunk; count -= chunk;
     }
     return 0;
 }
 
 int stlink_swd_write_mem32(uint32_t addr, uint16_t count, const uint32_t *data_in) {
-    if (!gpio || count == 0) return -1;
+    if (!gpio || !data_in || count == 0 || (addr & 3)) return -1;
 
     // Select AP 0, Bank 0
     uint32_t select = 0x00000000;
-    swd_transaction(0, 0, DP_REG_SELECT, &select);
+    if (swd_transaction(0, 0, DP_REG_SELECT, &select) != 1) return -1;
 
     // Set CSW: 32-bit incrementing transfer
     uint32_t csw = 0x23000052;
-    swd_transaction(0, 1, AP_REG_CSW, &csw);
+    if (swd_transaction(0, 1, AP_REG_CSW, &csw) != 1) return -1;
 
     // Set TAR
-    swd_transaction(0, 1, AP_REG_TAR, &addr);
+    if (swd_transaction(0, 1, AP_REG_TAR, &addr) != 1) return -1;
 
     // Write words
     for (uint16_t i = 0; i < count; i++) {
+        if (i && !((addr + i * 4) & 1023)) {
+            uint32_t next = addr + i * 4;
+            if (swd_transaction(0, 1, AP_REG_TAR, &next) != 1) return -1;
+        }
         uint32_t val = data_in[i];
-        swd_transaction(0, 1, AP_REG_DRW, &val);
+        if (swd_transaction(0, 1, AP_REG_DRW, &val) != 1) return -1;
     }
+    uint32_t status;
+    if (swd_transaction(1, 0, DP_REG_RDBUFF, &status) != 1) return -1;
     return 0;
 }
 
@@ -325,12 +377,19 @@ int stlink_swd_get_status(uint8_t *status_out) {
 
 int stlink_swd_read_core_reg(uint8_t reg_idx, uint32_t *val_out) {
     uint32_t dcrsr = reg_idx & 0x7F;
-    stlink_swd_write_mem32(DCRSR, 1, &dcrsr);
+    if (stlink_swd_write_mem32(DCRSR, 1, &dcrsr)) return -1;
+    uint64_t deadline = swd_monotonic_ns() + 50000000;
+    uint32_t status;
+    do {
+        if (stlink_swd_read_mem32(DHCSR, 1, &status)) return -1;
+        if (status & (1u << 16)) break;
+        if (swd_monotonic_ns() > deadline) return -1;
+    } while (1);
     return stlink_swd_read_mem32(DCRDR, 1, val_out);
 }
 
 int stlink_swd_write_core_reg(uint8_t reg_idx, uint32_t val) {
-    stlink_swd_write_mem32(DCRDR, 1, &val);
+    if (stlink_swd_write_mem32(DCRDR, 1, &val)) return -1;
     uint32_t dcrsr = (1 << 16) | (reg_idx & 0x7F); // Write flag
     return stlink_swd_write_mem32(DCRSR, 1, &dcrsr);
 }

@@ -16,6 +16,8 @@ set_property default_lib work [current_project]
 
 # Add Verilog RTL modules before BD creation so module reference works
 add_files -norecurse [file normalize [file join $script_dir "axi_swd_engine.v"]]
+add_files -norecurse [file normalize [file join $script_dir "axil_register_slave.v"]]
+add_files -norecurse [file normalize [file join $script_dir "axi_swo_engine.v"]]
 update_compile_order -fileset sources_1
 
 # ----------------------------------------------------------------------------
@@ -36,6 +38,8 @@ set_property -dict [list \
   CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {100.000000} \
   CONFIG.PCW_FPGA_FCLK0_ENABLE {1} \
   CONFIG.PCW_USE_M_AXI_GP0 {1} \
+  CONFIG.PCW_USE_FABRIC_INTERRUPT {1} \
+  CONFIG.PCW_IRQ_F2P_INTR {1} \
   CONFIG.PCW_UIPARAM_DDR_PARTNO {MT41K128M16 JT-125} \
   CONFIG.PCW_UIPARAM_DDR_BUS_WIDTH {32 Bit} \
   CONFIG.PCW_UIPARAM_DDR_MEMORY_TYPE {DDR 3} \
@@ -72,7 +76,7 @@ make_bd_intf_pins_external [get_bd_intf_pins processing_system7_0/FIXED_IO]
 puts "==> Instantiating Reset Controller and AXI Interconnect..."
 set rst_gen [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_ps7_0_100M]
 set axi_ic  [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect ps7_0_axi_periph]
-set_property -dict [list CONFIG.NUM_MI {4} CONFIG.NUM_SI {1}] $axi_ic
+set_property -dict [list CONFIG.NUM_MI {5} CONFIG.NUM_SI {1}] $axi_ic
 
 # ----------------------------------------------------------------------------
 # Instantiate AXI UARTLite for Secondary Target UART (Base 0x42C00000)
@@ -98,6 +102,12 @@ puts "==> Instantiating Secondary Hardware SWD Engine 1 (axi_swd_engine @ 0x43C1
 set axi_swd_1 [create_bd_cell -type module -reference axi_swd_engine axi_swd_1]
 
 # ----------------------------------------------------------------------------
+# Instantiate Hardware SWO Trace Engine (axi_swo_engine @ 0x43C20000)
+# ----------------------------------------------------------------------------
+puts "==> Instantiating Hardware SWO Trace Engine (axi_swo_engine @ 0x43C20000)..."
+set axi_swo_0 [create_bd_cell -type module -reference axi_swo_engine axi_swo_0]
+
+# ----------------------------------------------------------------------------
 # Connect Clocks and Resets
 # ----------------------------------------------------------------------------
 puts "==> Wiring Clocks and Resets..."
@@ -110,10 +120,12 @@ connect_bd_net [get_bd_pins processing_system7_0/FCLK_CLK0] \
                [get_bd_pins ps7_0_axi_periph/M01_ACLK] \
                [get_bd_pins ps7_0_axi_periph/M02_ACLK] \
                [get_bd_pins ps7_0_axi_periph/M03_ACLK] \
+               [get_bd_pins ps7_0_axi_periph/M04_ACLK] \
                [get_bd_pins axi_uartlite_0/s_axi_aclk] \
                [get_bd_pins axi_gpio_0/s_axi_aclk] \
                [get_bd_pins axi_swd_0/s_axi_aclk] \
-               [get_bd_pins axi_swd_1/s_axi_aclk]
+               [get_bd_pins axi_swd_1/s_axi_aclk] \
+               [get_bd_pins axi_swo_0/s_axi_aclk]
 
 connect_bd_net [get_bd_pins processing_system7_0/FCLK_RESET0_N] [get_bd_pins rst_ps7_0_100M/ext_reset_in]
 
@@ -124,10 +136,12 @@ connect_bd_net [get_bd_pins rst_ps7_0_100M/peripheral_aresetn] \
                [get_bd_pins ps7_0_axi_periph/M01_ARESETN] \
                [get_bd_pins ps7_0_axi_periph/M02_ARESETN] \
                [get_bd_pins ps7_0_axi_periph/M03_ARESETN] \
+               [get_bd_pins ps7_0_axi_periph/M04_ARESETN] \
                [get_bd_pins axi_uartlite_0/s_axi_aresetn] \
                [get_bd_pins axi_gpio_0/s_axi_aresetn] \
                [get_bd_pins axi_swd_0/s_axi_aresetn] \
-               [get_bd_pins axi_swd_1/s_axi_aresetn]
+               [get_bd_pins axi_swd_1/s_axi_aresetn] \
+               [get_bd_pins axi_swo_0/s_axi_aresetn]
 
 # Connect AXI GP0 -> Interconnect -> Slaves
 connect_bd_intf_net [get_bd_intf_pins processing_system7_0/M_AXI_GP0] [get_bd_intf_pins ps7_0_axi_periph/S00_AXI]
@@ -135,6 +149,7 @@ connect_bd_intf_net [get_bd_intf_pins ps7_0_axi_periph/M00_AXI] [get_bd_intf_pin
 connect_bd_intf_net [get_bd_intf_pins ps7_0_axi_periph/M01_AXI] [get_bd_intf_pins axi_uartlite_0/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ps7_0_axi_periph/M02_AXI] [get_bd_intf_pins axi_swd_0/s_axi]
 connect_bd_intf_net [get_bd_intf_pins ps7_0_axi_periph/M03_AXI] [get_bd_intf_pins axi_swd_1/s_axi]
+connect_bd_intf_net [get_bd_intf_pins ps7_0_axi_periph/M04_AXI] [get_bd_intf_pins axi_swo_0/s_axi]
 
 # Assign Memory Addresses
 assign_bd_address [get_bd_addr_segs {axi_gpio_0/S_AXI/Reg }]
@@ -153,11 +168,22 @@ assign_bd_address [get_bd_addr_segs {axi_swd_1/s_axi/reg0 }]
 set_property offset 0x43C10000 [get_bd_addr_segs {processing_system7_0/Data/SEG_axi_swd_1_reg0}]
 set_property range 64K [get_bd_addr_segs {processing_system7_0/Data/SEG_axi_swd_1_reg0}]
 
-# Make EMIO GPIO, PS UART0, AXI UART, SWD Engines, and Clock external
+assign_bd_address [get_bd_addr_segs {axi_swo_0/s_axi/reg0 }]
+set_property offset 0x43C20000 [get_bd_addr_segs {processing_system7_0/Data/SEG_axi_swo_0_reg0}]
+set_property range 64K [get_bd_addr_segs {processing_system7_0/Data/SEG_axi_swo_0_reg0}]
+
+# Make EMIO GPIO, PS UART0, AXI UART, SWD Engines, SWO Inputs, and Clock external
 create_bd_port -dir O clk_100mhz
 connect_bd_net [get_bd_pins processing_system7_0/FCLK_CLK0] [get_bd_ports clk_100mhz]
 
+create_bd_port -dir I swo_in_0
+create_bd_port -dir I swo_in_1
+connect_bd_net [get_bd_pins axi_swo_0/swo_in_0] [get_bd_ports swo_in_0]
+connect_bd_net [get_bd_pins axi_swo_0/swo_in_1] [get_bd_ports swo_in_1]
+
 create_bd_port -dir O swd_hw_en_0
+create_bd_port -dir O swd_released_0
+connect_bd_net [get_bd_pins axi_swd_0/swd_released] [get_bd_ports swd_released_0]
 create_bd_port -dir O hw_swclk_o_0
 create_bd_port -dir O hw_swdio_o_0
 create_bd_port -dir O hw_swdio_t_0
@@ -169,6 +195,8 @@ connect_bd_net [get_bd_pins axi_swd_0/swdio_t]   [get_bd_ports hw_swdio_t_0]
 connect_bd_net [get_bd_pins axi_swd_0/swdio_i]   [get_bd_ports hw_swdio_i_0]
 
 create_bd_port -dir O swd_hw_en_1
+create_bd_port -dir O swd_released_1
+connect_bd_net [get_bd_pins axi_swd_1/swd_released] [get_bd_ports swd_released_1]
 create_bd_port -dir O hw_swclk_o_1
 create_bd_port -dir O hw_swdio_o_1
 create_bd_port -dir O hw_swdio_t_1
@@ -195,6 +223,7 @@ create_bd_port -dir O pl_uart1_tx
 create_bd_port -dir I pl_uart1_rx
 connect_bd_net [get_bd_pins axi_uartlite_0/tx] [get_bd_ports pl_uart1_tx]
 connect_bd_net [get_bd_pins axi_uartlite_0/rx] [get_bd_ports pl_uart1_rx]
+connect_bd_net [get_bd_pins axi_uartlite_0/interrupt] [get_bd_pins processing_system7_0/IRQ_F2P]
 
 regenerate_bd_layout
 validate_bd_design

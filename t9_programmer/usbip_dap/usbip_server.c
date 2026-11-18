@@ -11,6 +11,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+
+static volatile sig_atomic_t stop_requested;
+static void request_stop(int signum) { (void)signum; stop_requested = 1; }
 #include <fcntl.h>
 #include <poll.h>
 #include <time.h>
@@ -24,6 +27,8 @@
 #include "DAP_config.h"
 #include "DAP.h"
 #include "../stlink/stlink_swd.h"
+#include "../common/resource_lock.h"
+#include "stream_ring.h"
 
 #define TCP_SERV_PORT 3240
 #define DAP_MAX_PACKET 512
@@ -33,7 +38,7 @@ static bool recv_all(int fd, void *buf, size_t len);
 static bool send_ret_submit(int fd, USBIP_CMD_SUBMIT *cmd, int status, const void *data, uint32_t len);
 
 #define DEBUG_VERBOSE 0
-#ifdef DEBUG_VERBOSE
+#if DEBUG_VERBOSE
 #define LOG_DAP(...) printf(__VA_ARGS__)
 #else
 #define LOG_DAP(...) do {} while (0)
@@ -41,7 +46,9 @@ static bool send_ret_submit(int fd, USBIP_CMD_SUBMIT *cmd, int status, const voi
 
 volatile uint32_t *gpio_mem = NULL;
 volatile uint32_t *swd_hw_mem = NULL;
+volatile uint32_t *swo_hw_mem = NULL;
 bool swd_hw_available = false;
+bool swo_hw_available = false;
 
 // Descriptors
 static const USB_DEVICE_DESCRIPTOR dev_dsc = {
@@ -446,10 +453,28 @@ static const uint8_t ms_ext_prop_stlink[142] = {
     0,0
 };
 
+static uint32_t read_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+#define STLINK_CHECK(operation) do { if ((operation) != 0) { \
+    resp_buf[0] = 0x80; resp_buf[1] = 0; return 2; } } while (0)
 static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *resp_buf, int max_resp) {
-    if (cmd_len < 2) return 0;
+    if (!cmd_buf || !resp_buf || cmd_len < 2 || max_resp < 8) return 0;
     uint8_t cmd0 = cmd_buf[0];
     uint8_t cmd1 = cmd_buf[1];
+    if (cmd0 == 0xF2) {
+        if (cmd1 == 0x07 || cmd1 == 0x32 || cmd1 == 0x08 || cmd1 == 0x33) {
+            if (cmd_len < 8) return 0;
+            unsigned count = cmd_buf[6] | ((unsigned)cmd_buf[7] << 8);
+            if (cmd1 == 0x08 || cmd1 == 0x33) {
+                if (count > (unsigned)(cmd_len - 8) / 4) return 0;
+            } else if (count > (unsigned)max_resp / 4) return 0;
+        }
+        if (cmd1 == 0x34 && cmd_len < 3) return 0;
+        if (cmd1 == 0x37 && cmd_len < 7) return 0;
+    }
 
     if (cmd0 == 0xF1 && cmd1 == 0x80) { // STLINK_GET_VERSION
         resp_buf[0] = 0x20;
@@ -466,8 +491,8 @@ static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *
     } else if (cmd0 == 0xF2) { // STLINK_DEBUG_COMMAND
         switch (cmd1) {
         case 0x30: { // STLINK_DEBUG_ENTER (SWD)
-            stlink_swd_init();
-            stlink_swd_line_reset();
+            STLINK_CHECK(stlink_swd_init());
+            STLINK_CHECK(stlink_swd_line_reset());
             resp_buf[0] = 0x00;
             resp_buf[1] = 0x00;
             return 2;
@@ -480,7 +505,7 @@ static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *
         }
         case 0x22: { // STLINK_DEBUG_READCOREID
             uint32_t dpidr = 0;
-            stlink_swd_read_dpidr(&dpidr);
+            STLINK_CHECK(stlink_swd_read_dpidr(&dpidr));
             memcpy(resp_buf, &dpidr, 4);
             return 4;
         }
@@ -492,37 +517,41 @@ static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *
         }
         case 0x07:   // STLINK_DEBUG_READMEM_32BIT
         case 0x32: {
-            uint32_t addr = *(uint32_t *)&cmd_buf[2];
-            uint16_t count = *(uint16_t *)&cmd_buf[6];
+            uint32_t addr = read_le32(cmd_buf + 2);
+            uint16_t count = cmd_buf[6] | ((unsigned)cmd_buf[7] << 8);
             if (count * 4 > max_resp) count = max_resp / 4;
-            stlink_swd_read_mem32(addr, count, (uint32_t *)resp_buf);
+            uint32_t words[128];
+            STLINK_CHECK(stlink_swd_read_mem32(addr, count, words));
+            memcpy(resp_buf, words, count * 4);
             return count * 4;
         }
         case 0x08:   // STLINK_DEBUG_WRITEMEM_32BIT
         case 0x33: {
-            uint32_t addr = *(uint32_t *)&cmd_buf[2];
-            uint16_t count = *(uint16_t *)&cmd_buf[6];
-            const uint32_t *data = (const uint32_t *)&cmd_buf[8];
-            stlink_swd_write_mem32(addr, count, data);
+            uint32_t addr = read_le32(cmd_buf + 2);
+            uint16_t count = cmd_buf[6] | ((unsigned)cmd_buf[7] << 8);
+            uint32_t words[126];
+            if (count > 126) return 0;
+            for (unsigned i = 0; i < count; ++i) words[i] = read_le32(cmd_buf + 8 + i * 4);
+            STLINK_CHECK(stlink_swd_write_mem32(addr, count, words));
             resp_buf[0] = 0x00;
             resp_buf[1] = 0x00;
             return 2;
         }
         case 0x35: { // STLINK_DEBUG_STEPCORE
-            stlink_swd_step_core();
+            STLINK_CHECK(stlink_swd_step_core());
             resp_buf[0] = 0x00;
             resp_buf[1] = 0x00;
             return 2;
         }
         case 0x36: { // STLINK_DEBUG_RUNCORE
-            stlink_swd_run_core();
+            STLINK_CHECK(stlink_swd_run_core());
             resp_buf[0] = 0x00;
             resp_buf[1] = 0x00;
             return 2;
         }
         case 0x3A: { // STLINK_DEBUG_GETSTATUS
             uint8_t status = 0;
-            stlink_swd_get_status(&status);
+            STLINK_CHECK(stlink_swd_get_status(&status));
             resp_buf[0] = status;
             resp_buf[1] = 0x00;
             return 2;
@@ -530,14 +559,14 @@ static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *
         case 0x34: { // STLINK_DEBUG_READREG
             uint8_t reg_idx = cmd_buf[2];
             uint32_t val = 0;
-            stlink_swd_read_core_reg(reg_idx, &val);
+            STLINK_CHECK(stlink_swd_read_core_reg(reg_idx, &val));
             memcpy(resp_buf, &val, 4);
             return 4;
         }
         case 0x37: { // STLINK_DEBUG_WRITEREG
             uint8_t reg_idx = cmd_buf[2];
-            uint32_t val = *(uint32_t *)&cmd_buf[3];
-            stlink_swd_write_core_reg(reg_idx, val);
+            uint32_t val = read_le32(cmd_buf + 3);
+            STLINK_CHECK(stlink_swd_write_core_reg(reg_idx, val));
             resp_buf[0] = 0x00;
             resp_buf[1] = 0x00;
             return 2;
@@ -548,17 +577,18 @@ static int process_stlink_command(const uint8_t *cmd_buf, int cmd_len, uint8_t *
             return 2;
         }
         default:
-            resp_buf[0] = 0x00;
+            resp_buf[0] = 0x80;
             resp_buf[1] = 0x00;
             return 2;
         }
     }
 
-    resp_buf[0] = 0x00;
+    resp_buf[0] = 0x80;
     resp_buf[1] = 0x00;
     return 2;
 }
 
+static bool receive_submit(int fd, USBIP_CMD_SUBMIT *cmd);
 static void handle_stlink_session(int client_fd) {
     printf("[STLINK] Session active for Pod #2 (Header J4)...\n");
     uint8_t cmd_buf[512];
@@ -566,12 +596,12 @@ static void handle_stlink_session(int client_fd) {
     int resp_len = 0;
     bool has_resp = false;
 
-    while (1) {
+    while (!stop_requested) {
         struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
         int pr = poll(&pfd, 1, 100);
         if (pr == 0) continue;
         if (pr < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR && !stop_requested) continue;
             break;
         }
 
@@ -581,13 +611,10 @@ static void handle_stlink_session(int client_fd) {
 
         if (cmd_code == 0x00000001) { // USBIP_CMD_SUBMIT
             USBIP_CMD_SUBMIT cmd;
-            cmd.command = cmd_code;
-            if (!recv_all(client_fd, ((uint32_t *)&cmd) + 1, sizeof(USBIP_CMD_SUBMIT) - 4)) break;
-            cmd.seqnum                 = ntohl(cmd.seqnum);
-            cmd.devid                  = ntohl(cmd.devid);
-            cmd.direction              = ntohl(cmd.direction);
-            cmd.ep                     = ntohl(cmd.ep);
-            cmd.transfer_buffer_length = ntohl(cmd.transfer_buffer_length);
+            if (!receive_submit(client_fd, &cmd) ||
+                cmd.transfer_buffer_length > (int)sizeof(cmd_buf)) break;
+            if (cmd.direction == 0 &&
+                !recv_all(client_fd, cmd_buf, cmd.transfer_buffer_length)) break;
 
             if (cmd.ep == 0) {
                 // Control transfer on ST-Link
@@ -650,26 +677,22 @@ static void handle_stlink_session(int client_fd) {
             } else if (cmd.ep == 1 || cmd.ep == 2) {
                 if (cmd.direction == 0) { // OUT: Host sending ST-Link Command
                     uint32_t rlen = cmd.transfer_buffer_length;
-                    uint32_t to_read = (rlen > sizeof(cmd_buf)) ? sizeof(cmd_buf) : rlen;
-                    if (!recv_all(client_fd, cmd_buf, to_read)) break;
-                    if (rlen > to_read) {
-                        uint32_t excess = rlen - to_read;
-                        uint8_t dummy[256];
-                        while (excess > 0) {
-                            uint32_t chk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
-                            if (!recv_all(client_fd, dummy, chk)) break;
-                            excess -= chk;
-                        }
+                    if (has_resp) {
+                        if (!send_ret_submit(client_fd, &cmd, -ENOSPC, NULL, 0)) break;
+                        continue;
                     }
-                    send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
+                    if (!send_ret_submit(client_fd, &cmd, 0, NULL, rlen)) break;
 
                     // Process ST-LINK Command
-                    resp_len = process_stlink_command(cmd_buf, to_read, resp_buf, sizeof(resp_buf));
+                    resp_len = process_stlink_command(cmd_buf, rlen, resp_buf, sizeof(resp_buf));
                     has_resp = true;
                 } else { // IN: Host reading ST-Link response
                     if (has_resp) {
-                        uint32_t tx_len = (resp_len > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : resp_len;
-                        send_ret_submit(client_fd, &cmd, 0, resp_buf, tx_len);
+                        if (resp_len > cmd.transfer_buffer_length) {
+                            if (!send_ret_submit(client_fd, &cmd, -EMSGSIZE, NULL, 0)) break;
+                            continue;
+                        }
+                        if (!send_ret_submit(client_fd, &cmd, 0, resp_buf, resp_len)) break;
                         has_resp = false;
                     } else {
                         send_ret_submit(client_fd, &cmd, 0, NULL, 0);
@@ -689,14 +712,13 @@ static void handle_stlink_session(int client_fd) {
             memset(&ret_unl, 0, sizeof(ret_unl));
             ret_unl.command = htonl(0x0004);
             ret_unl.seqnum  = unl.seqnum;
-            ret_unl.status  = htonl(-ECONNRESET);
+            ret_unl.status  = 0; /* This session has no deferred SUBMITs. */
             send_all(client_fd, &ret_unl, sizeof(ret_unl));
         } else {
             break;
         }
     }
     stlink_swd_close();
-    close(client_fd);
     printf("[STLINK] Session closed.\n");
 }
 
@@ -713,7 +735,8 @@ static const char *strings[] = {
 static bool send_all(int fd, const void *buf, size_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     while (len > 0) {
-        ssize_t n = send(fd, p, len, 0);
+        ssize_t n = send(fd, p, len, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR && !stop_requested) continue;
         if (n <= 0) return false;
         p += n;
         len -= n;
@@ -725,6 +748,7 @@ static bool recv_all(int fd, void *buf, size_t len) {
     uint8_t *p = (uint8_t *)buf;
     while (len > 0) {
         ssize_t n = recv(fd, p, len, MSG_WAITALL);
+        if (n < 0 && errno == EINTR && !stop_requested) continue;
         if (n <= 0) return false;
         p += n;
         len -= n;
@@ -733,18 +757,25 @@ static bool recv_all(int fd, void *buf, size_t len) {
 }
 
 static bool send_ret_submit(int fd, USBIP_CMD_SUBMIT *cmd, int status, const void *data, uint32_t len) {
+    if (cmd->transfer_buffer_length < 0) return false;
+    if (len > (uint32_t)cmd->transfer_buffer_length)
+        len = (uint32_t)cmd->transfer_buffer_length;
+    if (cmd->ep == 0 && cmd->direction == 1) {
+        setup_pkt_t setup;
+        memcpy(&setup, cmd->setup, sizeof(setup));
+        if (len > setup.wLength) len = setup.wLength;
+    }
+    if (cmd->direction == 1 && len && !data) return false;
     USBIP_RET_SUBMIT ret;
     memset(&ret, 0, sizeof(ret));
     ret.command       = htonl(0x0003);
     ret.seqnum        = htonl(cmd->seqnum);
-    ret.devid         = htonl(cmd->devid);
-    ret.direction     = htonl(cmd->direction);
-    ret.ep            = htonl(cmd->ep);
+    /* Server response basic-header fields are reserved zero (USB/IP v1.1.1). */
     ret.status        = htonl(status);
     ret.actual_length = htonl(len);
 
     if (!send_all(fd, &ret, sizeof(ret))) return false;
-    if (len > 0 && data != NULL) {
+    if (cmd->direction == 1 && len > 0 && data != NULL) {
         if (!send_all(fd, data, len)) return false;
     }
     return true;
@@ -813,7 +844,7 @@ static bool handle_get_descriptor(int fd, USBIP_CMD_SUBMIT *cmd, setup_pkt_t *se
     }
 }
 
-#define MAX_PENDING_IN 16
+#define MAX_PENDING_IN 64
 static USBIP_CMD_SUBMIT pending_in_queue[MAX_PENDING_IN];
 static int pending_in_head = 0;
 static int pending_in_tail = 0;
@@ -833,18 +864,10 @@ static bool pending_in_push(const USBIP_CMD_SUBMIT *cmd) {
     return true;
 }
 
-static bool pending_in_pop(USBIP_CMD_SUBMIT *out_cmd) {
-    if (pending_in_count == 0) return false;
-    *out_cmd = pending_in_queue[pending_in_head];
-    pending_in_head = (pending_in_head + 1) % MAX_PENDING_IN;
-    pending_in_count--;
-    return true;
-}
-
 static bool pending_in_unlink(uint32_t seqnum, USBIP_CMD_SUBMIT *out_cmd) {
     for (int i = 0; i < pending_in_count; i++) {
         int idx = (pending_in_head + i) % MAX_PENDING_IN;
-        if (pending_in_queue[idx].seqnum == seqnum) {
+        if ((uint32_t)pending_in_queue[idx].seqnum == seqnum) {
             if (out_cmd) *out_cmd = pending_in_queue[idx];
             for (int j = i; j < pending_in_count - 1; j++) {
                 int cur = (pending_in_head + j) % MAX_PENDING_IN;
@@ -859,6 +882,16 @@ static bool pending_in_unlink(uint32_t seqnum, USBIP_CMD_SUBMIT *out_cmd) {
     return false;
 }
 
+static bool pending_in_pop_ep(int ep, USBIP_CMD_SUBMIT *out)
+{
+    for (int i = 0; i < pending_in_count; ++i) {
+        int idx = (pending_in_head + i) % MAX_PENDING_IN;
+        if (pending_in_queue[idx].ep == ep)
+            return pending_in_unlink(pending_in_queue[idx].seqnum, out);
+    }
+    return false;
+}
+
 typedef struct __attribute__ ((__packed__)) {
     uint32_t dwDTERate;
     uint8_t  bCharFormat;
@@ -866,15 +899,16 @@ typedef struct __attribute__ ((__packed__)) {
     uint8_t  bDataBits;
 } CDC_LINE_CODING;
 
-static CDC_LINE_CODING cdc_line_coding = {
-    .dwDTERate   = 115200,
-    .bCharFormat = 0, // 1 stop bit
-    .bParityType = 0, // None
-    .bDataBits   = 8  // 8 bits
+static CDC_LINE_CODING cdc_line_coding[2] = {
+    {115200, 0, 0, 8}, {115200, 0, 0, 8}
 };
 
-static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd) {
+static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd,
+                                    const uint8_t *payload, size_t payload_length) {
     setup_pkt_t *setup = (setup_pkt_t *)cmd->setup;
+    if (((setup->bmRequestType >> 7) & 1) != cmd->direction ||
+        (cmd->direction == 0 && setup->wLength != payload_length))
+        return send_ret_submit(fd, cmd, -EPIPE, NULL, 0);
 
     if (setup->bmRequestType == 0x80) { // Device-to-Host Standard Device Request
         if (setup->bRequest == 0x06) { // GET_DESCRIPTOR
@@ -910,18 +944,28 @@ static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd) {
         }
     } else if (setup->bmRequestType == 0x21) { // Host-to-Device Class Interface (CDC)
         if (setup->bRequest == 0x20) { // SET_LINE_CODING
-            uint32_t len = setup->wLength;
-            if (len > sizeof(cdc_line_coding)) len = sizeof(cdc_line_coding);
-            recv_all(fd, &cdc_line_coding, len);
-            return send_ret_submit(fd, cmd, 0, NULL, len);
+            int port = setup->wIndex.W == 3;
+            if ((setup->wIndex.W != 1 && setup->wIndex.W != 3) ||
+                payload_length != sizeof(CDC_LINE_CODING))
+                return send_ret_submit(fd, cmd, -EPIPE, NULL, 0);
+            CDC_LINE_CODING coding;
+            memcpy(&coding, payload, sizeof(coding));
+            /* Both current backends are fixed at 115200 8N1. Never lie about baud. */
+            if (coding.dwDTERate != 115200 || coding.bCharFormat ||
+                coding.bParityType || coding.bDataBits != 8)
+                return send_ret_submit(fd, cmd, -EPIPE, NULL, 0);
+            cdc_line_coding[port] = coding;
+            return send_ret_submit(fd, cmd, 0, NULL, payload_length);
         } else if (setup->bRequest == 0x22) { // SET_CONTROL_LINE_STATE
             return send_ret_submit(fd, cmd, 0, NULL, 0);
         }
     } else if (setup->bmRequestType == 0xA1) { // Device-to-Host Class Interface (CDC)
         if (setup->bRequest == 0x21) { // GET_LINE_CODING
+            if (setup->wIndex.W != 1 && setup->wIndex.W != 3)
+                return send_ret_submit(fd, cmd, -EPIPE, NULL, 0);
             uint32_t len = setup->wLength;
-            if (len > sizeof(cdc_line_coding)) len = sizeof(cdc_line_coding);
-            return send_ret_submit(fd, cmd, 0, &cdc_line_coding, len);
+            if (len > sizeof(CDC_LINE_CODING)) len = sizeof(CDC_LINE_CODING);
+            return send_ret_submit(fd, cmd, 0, &cdc_line_coding[setup->wIndex.W == 3], len);
         }
     } else if (setup->bmRequestType == 0xC0 || setup->bmRequestType == 0xC1) {
         // Vendor Device-to-Host Request: Microsoft OS 2.0 or OS 1.0
@@ -963,26 +1007,20 @@ static bool handle_control_transfer(int fd, USBIP_CMD_SUBMIT *cmd) {
         }
     }
 
-    return send_ret_submit(fd, cmd, 0, NULL, 0);
+    return send_ret_submit(fd, cmd, -EPIPE, NULL, 0);
 }
+
+#include "usbip_session.inc"
 
 static void handle_client(int client_fd) {
     int flag = 1;
     setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int));
 
-    bool attached = false;
-    uint8_t dap_req_buf[DAP_MAX_PACKET];
-    uint8_t dap_resp_buf[DAP_MAX_PACKET];
-    int dap_resp_len = 0;
-    bool has_dap_resp = false;
-
-    pending_in_init();
-
-    int uart0_fd = -1;
-    int uart1_fd = -1;
-
-    while (1) {
-        if (!attached) {
+    int pod_lock = -1;
+    struct timeval io_timeout = {.tv_sec = 5};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &io_timeout, sizeof(io_timeout));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &io_timeout, sizeof(io_timeout));
+    while (!stop_requested) {
             uint16_t version, command;
             uint32_t status;
             if (!recv_all(client_fd, &version, 2)) break;
@@ -990,6 +1028,7 @@ static void handle_client(int client_fd) {
             if (!recv_all(client_fd, &status, 4)) break;
 
             command = ntohs(command);
+            if (ntohs(version) != 0x0111 || status != 0) break;
 
             if (command == 0x8005) { // OP_REQ_DEVLIST
                 OP_REP_DEVLIST_HEADER rep_hdr;
@@ -1081,7 +1120,16 @@ static void handle_client(int client_fd) {
                 char busid[32];
                 if (!recv_all(client_fd, busid, 32)) break;
 
-                bool is_stlink = (strncmp(busid, "1-2", 3) == 0);
+                bool valid_busid = memchr(busid, 0, sizeof(busid)) &&
+                                   (!strcmp(busid, "1-1") || !strcmp(busid, "1-2"));
+                bool is_stlink = valid_busid && !strcmp(busid, "1-2");
+                if (valid_busid)
+                    pod_lock = plink_resource_lock(is_stlink ? "pod2" : "pod1");
+                if (!valid_busid || pod_lock < 0 || !is_fpga_operating()) {
+                    OP_REQ_DEVLIST rejected = {htons(0x0111), htons(3), htonl(1)};
+                    send_all(client_fd, &rejected, sizeof(rejected));
+                    break;
+                }
 
                 OP_REP_IMPORT rep;
                 memset(&rep, 0, sizeof(rep));
@@ -1108,276 +1156,15 @@ static void handle_client(int client_fd) {
                     handle_stlink_session(client_fd);
                     break;
                 }
-                attached = true;
-                pending_in_init();
-                has_dap_resp = false;
-
-                // Connect non-blocking socket to local UART0 TCP bridge (:2000)
-                uart0_fd = socket(AF_INET, SOCK_STREAM, 0);
-                if (uart0_fd >= 0) {
-                    int flags = fcntl(uart0_fd, F_GETFL, 0);
-                    fcntl(uart0_fd, F_SETFL, flags | O_NONBLOCK);
-                    struct sockaddr_in uaddr;
-                    memset(&uaddr, 0, sizeof(uaddr));
-                    uaddr.sin_family = AF_INET;
-                    uaddr.sin_port = htons(2000);
-                    uaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-                    connect(uart0_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
-                }
-
-                // Connect non-blocking socket to local UART1 TCP bridge (:2001)
-                uart1_fd = socket(AF_INET, SOCK_STREAM, 0);
-                if (uart1_fd >= 0) {
-                    int flags = fcntl(uart1_fd, F_GETFL, 0);
-                    fcntl(uart1_fd, F_SETFL, flags | O_NONBLOCK);
-                    struct sockaddr_in uaddr;
-                    memset(&uaddr, 0, sizeof(uaddr));
-                    uaddr.sin_family = AF_INET;
-                    uaddr.sin_port = htons(2001);
-                    uaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-                    connect(uart1_fd, (struct sockaddr *)&uaddr, sizeof(uaddr));
-                }
-                printf("[USBIP] Device 1-1 (Plink Composite: WinUSB + Dual CDC-ACM) imported. Connected to host.\n");
+                run_plink_session(client_fd);
+                break;
             } else {
                 break;
             }
-        } else {
-            // Attached: Process USBIP URB Packets
-            struct pollfd pfd = { .fd = client_fd, .events = POLLIN };
-            int pr = poll(&pfd, 1, 100);
-            if (pr == 0) {
-                // Idle: no USB/IP packets received in 100ms -> turn D3 LEDs OFF
-                dap_activity_idle();
-                continue;
-            } else if (pr < 0) {
-                if (errno == EINTR) continue;
-                break;
-            }
-
-            uint32_t cmd_code;
-            if (!recv_all(client_fd, &cmd_code, 4)) {
-                printf("[USBIP] recv cmd_code failed or connection closed: errno=%d (%s)\n", errno, strerror(errno));
-                break;
-            }
-            cmd_code = ntohl(cmd_code);
-            LOG_DAP("[USBIP] Got cmd_code: 0x%08X\n", cmd_code);
-
-            if (cmd_code == 0x00000001) { // USBIP_CMD_SUBMIT
-                USBIP_CMD_SUBMIT cmd;
-                cmd.command = cmd_code;
-                if (!recv_all(client_fd, ((uint32_t *)&cmd) + 1, sizeof(USBIP_CMD_SUBMIT) - 4)) {
-                    printf("[USBIP] recv_all USBIP_CMD_SUBMIT rest failed!\n");
-                    break;
-                }
-
-                cmd.seqnum                 = ntohl(cmd.seqnum);
-                cmd.devid                  = ntohl(cmd.devid);
-                cmd.direction              = ntohl(cmd.direction);
-                cmd.ep                     = ntohl(cmd.ep);
-                cmd.transfer_flags         = ntohl(cmd.transfer_flags);
-                cmd.transfer_buffer_length = ntohl(cmd.transfer_buffer_length);
-                cmd.start_frame            = ntohl(cmd.start_frame);
-                cmd.number_of_packets      = ntohl(cmd.number_of_packets);
-                cmd.interval               = ntohl(cmd.interval);
-
-                if (cmd.ep == 0) {
-                    LOG_DAP("[USBIP] EP0 control transfer req: bmReq=0x%02x bReq=0x%02x wVal=0x%04x wLen=%d\n",
-                            ((setup_pkt_t *)cmd.setup)->bmRequestType,
-                            ((setup_pkt_t *)cmd.setup)->bRequest,
-                            ((setup_pkt_t *)cmd.setup)->wValue.W,
-                            ((setup_pkt_t *)cmd.setup)->wLength);
-                    if (!handle_control_transfer(client_fd, &cmd)) {
-                        printf("[USBIP] handle_control_transfer failed!\n");
-                        break;
-                    }
-                } else if (cmd.ep == 1) {
-                    if (cmd.direction == 0) {
-                        // EP1 OUT: Receive DAP command from host
-                        uint32_t rlen = cmd.transfer_buffer_length;
-                        LOG_DAP("[USBIP] EP1 OUT seq=%d len=%d\n", cmd.seqnum, rlen);
-                        uint32_t to_read = (rlen > DAP_MAX_PACKET) ? DAP_MAX_PACKET : rlen;
-                        if (!recv_all(client_fd, dap_req_buf, to_read)) {
-                            printf("[USBIP] recv_all EP1 OUT payload failed!\n");
-                            break;
-                        }
-
-                        // Drain excess bytes from TCP socket to maintain strict protocol framing
-                        if (rlen > to_read) {
-                            uint32_t excess = rlen - to_read;
-                            uint8_t dummy[256];
-                            while (excess > 0) {
-                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
-                                if (!recv_all(client_fd, dummy, chunk)) break;
-                                excess -= chunk;
-                            }
-                        }
-
-                        LOG_DAP("[USBIP] EP1 OUT DAP cmd=0x%02x\n", dap_req_buf[0]);
-
-                        // Acknowledge OUT: actual_length must match rlen!
-                        if (!send_ret_submit(client_fd, &cmd, 0, NULL, rlen)) {
-                            printf("[USBIP] send_ret_submit EP1 OUT failed!\n");
-                            break;
-                        }
-
-                        // Execute CMSIS-DAP command directly on Zynq SWD pins
-                        dap_resp_len = dap_process_request(dap_req_buf, to_read, dap_resp_buf, DAP_MAX_PACKET);
-                        LOG_DAP("[USBIP] DAP cmd executed -> resp_len=%d, resp[0]=0x%02x\n",
-                                dap_resp_len, dap_resp_len > 0 ? dap_resp_buf[0] : 0);
-                        has_dap_resp = true;
-
-                        // If an IN URB is already pending, satisfy it immediately
-                        if (pending_in_count > 0) {
-                            USBIP_CMD_SUBMIT in_cmd;
-                            pending_in_pop(&in_cmd);
-                            uint32_t tx_len = (dap_resp_len > in_cmd.transfer_buffer_length) ? in_cmd.transfer_buffer_length : dap_resp_len;
-                            LOG_DAP("[USBIP] Satisfying pending IN seq=%d with len=%d (remaining pending=%d)\n",
-                                    in_cmd.seqnum, tx_len, pending_in_count);
-                            if (!send_ret_submit(client_fd, &in_cmd, 0, dap_resp_buf, tx_len)) {
-                                printf("[USBIP] send_ret_submit pending IN failed!\n");
-                                break;
-                            }
-                            has_dap_resp = false;
-                        } else {
-                            has_dap_resp = true;
-                        }
-                    } else {
-                        // EP1 IN: Host reading DAP response
-                        LOG_DAP("[USBIP] EP1 IN seq=%d len=%d (has_resp=%d)\n",
-                                cmd.seqnum, cmd.transfer_buffer_length, has_dap_resp);
-                        if (has_dap_resp) {
-                            uint32_t tx_len = (dap_resp_len > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : dap_resp_len;
-                            if (!send_ret_submit(client_fd, &cmd, 0, dap_resp_buf, tx_len)) {
-                                printf("[USBIP] send_ret_submit EP1 IN failed!\n");
-                                break;
-                            }
-                            has_dap_resp = false;
-                        } else {
-                            if (!pending_in_push(&cmd)) {
-                                printf("[USBIP] pending_in queue full! Overwriting oldest\n");
-                                USBIP_CMD_SUBMIT dropped;
-                                pending_in_pop(&dropped);
-                                send_ret_submit(client_fd, &dropped, -ECONNRESET, NULL, 0);
-                                pending_in_push(&cmd);
-                            }
-                        }
-                    }
-                } else if (cmd.ep == 2) {
-                    // EP2 IN: CDC0 Notification (Interrupt)
-                    static const uint8_t notify[10] = { 0xA1, 0x20, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00 };
-                    uint32_t tx_len = (sizeof(notify) > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : sizeof(notify);
-                    send_ret_submit(client_fd, &cmd, 0, notify, tx_len);
-                } else if (cmd.ep == 3) {
-                    // EP3: CDC0 Data (Primary Target UART0 -> J3 Pins 7/8)
-                    if (cmd.direction == 0) { // OUT: Host writing to serial port
-                        uint32_t rlen = cmd.transfer_buffer_length;
-                        uint8_t ubuf[512];
-                        uint32_t to_read = (rlen > sizeof(ubuf)) ? sizeof(ubuf) : rlen;
-                        if (!recv_all(client_fd, ubuf, to_read)) break;
-                        if (rlen > to_read) {
-                            uint32_t excess = rlen - to_read;
-                            uint8_t dummy[256];
-                            while (excess > 0) {
-                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
-                                if (!recv_all(client_fd, dummy, chunk)) break;
-                                excess -= chunk;
-                            }
-                        }
-                        if (uart0_fd >= 0) {
-                            send(uart0_fd, ubuf, to_read, MSG_NOSIGNAL);
-                        }
-                        send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
-                    } else { // IN: Host reading from serial port
-                        uint8_t rx_buf[512];
-                        ssize_t n_rx = 0;
-                        if (uart0_fd >= 0) {
-                            n_rx = recv(uart0_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
-                            if (n_rx < 0) n_rx = 0;
-                        }
-                        uint32_t tx_len = (uint32_t)n_rx;
-                        if (tx_len > cmd.transfer_buffer_length) tx_len = cmd.transfer_buffer_length;
-                        send_ret_submit(client_fd, &cmd, 0, (tx_len > 0) ? rx_buf : NULL, tx_len);
-                    }
-                } else if (cmd.ep == 4) {
-                    // EP4 IN: CDC1 Notification (Interrupt)
-                    static const uint8_t notify[10] = { 0xA1, 0x20, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x03, 0x00 };
-                    uint32_t tx_len = (sizeof(notify) > cmd.transfer_buffer_length) ? cmd.transfer_buffer_length : sizeof(notify);
-                    send_ret_submit(client_fd, &cmd, 0, notify, tx_len);
-                } else if (cmd.ep == 5) {
-                    // EP5: CDC1 Data (Secondary Target UART1 -> J3 Pins 11/12)
-                    if (cmd.direction == 0) { // OUT: Host writing to serial port
-                        uint32_t rlen = cmd.transfer_buffer_length;
-                        uint8_t ubuf[512];
-                        uint32_t to_read = (rlen > sizeof(ubuf)) ? sizeof(ubuf) : rlen;
-                        if (!recv_all(client_fd, ubuf, to_read)) break;
-                        if (rlen > to_read) {
-                            uint32_t excess = rlen - to_read;
-                            uint8_t dummy[256];
-                            while (excess > 0) {
-                                uint32_t chunk = (excess > sizeof(dummy)) ? sizeof(dummy) : excess;
-                                if (!recv_all(client_fd, dummy, chunk)) break;
-                                excess -= chunk;
-                            }
-                        }
-                        if (uart1_fd >= 0) {
-                            send(uart1_fd, ubuf, to_read, MSG_NOSIGNAL);
-                        }
-                        send_ret_submit(client_fd, &cmd, 0, NULL, rlen);
-                    } else { // IN: Host reading from serial port
-                        uint8_t rx_buf[512];
-                        ssize_t n_rx = 0;
-                        if (uart1_fd >= 0) {
-                            n_rx = recv(uart1_fd, rx_buf, sizeof(rx_buf), MSG_DONTWAIT);
-                            if (n_rx < 0) n_rx = 0;
-                        }
-                        uint32_t tx_len = (uint32_t)n_rx;
-                        if (tx_len > cmd.transfer_buffer_length) tx_len = cmd.transfer_buffer_length;
-                        send_ret_submit(client_fd, &cmd, 0, (tx_len > 0) ? rx_buf : NULL, tx_len);
-                    }
-                } else {
-                    printf("[USBIP] Unknown ep %d\n", cmd.ep);
-                    send_ret_submit(client_fd, &cmd, -1, NULL, 0);
-                }
-            } else if (cmd_code == 0x00000002) { // USBIP_CMD_UNLINK
-                USBIP_CMD_UNLINK unl;
-                unl.command = cmd_code;
-                if (!recv_all(client_fd, ((uint32_t *)&unl) + 1, sizeof(USBIP_CMD_UNLINK) - 4)) {
-                    printf("[USBIP] recv_all USBIP_CMD_UNLINK rest failed!\n");
-                    break;
-                }
-                unl.seqnum     = ntohl(unl.seqnum);
-                unl.seqnum_urb = ntohl(unl.seqnum_urb);
-                LOG_DAP("[USBIP] CMD_UNLINK seq=%d target_seq=%d\n", unl.seqnum, unl.seqnum_urb);
-
-                USBIP_RET_UNLINK ret_unl;
-                memset(&ret_unl, 0, sizeof(ret_unl));
-                ret_unl.command   = htonl(0x0004);
-                ret_unl.seqnum    = htonl(unl.seqnum);
-                ret_unl.devid     = 0;
-                ret_unl.direction = 0;
-                ret_unl.ep        = 0;
-
-                USBIP_CMD_SUBMIT unlinked_cmd;
-                if (pending_in_unlink(unl.seqnum_urb, &unlinked_cmd)) {
-                    ret_unl.status = htonl(0);
-                    send_all(client_fd, &ret_unl, sizeof(ret_unl));
-                    send_ret_submit(client_fd, &unlinked_cmd, -ECONNRESET, NULL, 0);
-                } else {
-                    ret_unl.status = htonl(-ECONNRESET);
-                    send_all(client_fd, &ret_unl, sizeof(ret_unl));
-                }
-            } else {
-                printf("[USBIP] Unknown cmd_code: 0x%08X\n", cmd_code);
-                break;
-            }
-        }
     }
 
-    if (uart0_fd >= 0) close(uart0_fd);
-    if (uart1_fd >= 0) close(uart1_fd);
     close(client_fd);
-    DAP_CONFIG_DISCONNECT();
-    dap_activity_idle();
+    if (pod_lock >= 0) close(pod_lock);
     printf("[USBIP] Client disconnected.\n");
 }
 
@@ -1386,6 +1173,11 @@ int main(void) {
     setlinebuf(stderr);
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);
+    struct sigaction stop_action = {0};
+    stop_action.sa_handler = request_stop;
+    sigemptyset(&stop_action.sa_mask);
+    sigaction(SIGTERM, &stop_action, NULL);
+    sigaction(SIGINT, &stop_action, NULL);
 
     printf("====================================================\n");
     printf(" Antminer T9+ Plink Debug & Serial Server\n");
@@ -1393,12 +1185,7 @@ int main(void) {
     printf(" Pod #1: J3 (CMSIS-DAP + Dual COM) | Pod #2: J4 (ST-Link/V2)\n");
     printf("====================================================\n");
 
-    if (zynq_gpio_init() < 0) {
-        fprintf(stderr, "Failed to initialize Zynq GPIO registers!\n");
-        return 1;
-    }
-
-    dap_init();
+    /* Mapping/touching hardware is deferred until a successful exclusive import. */
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -1432,12 +1219,12 @@ int main(void) {
     printf("        usbip.exe attach -r <board_ip> -b 1-1  (Pod 1: CMSIS-DAP + COM9 + COM10)\n");
     printf("        usbip.exe attach -r <board_ip> -b 1-2  (Pod 2: ST-LINK/V2)\n\n");
 
-    while (1) {
+    while (!stop_requested) {
         struct sockaddr_in cli_addr;
         socklen_t cli_len = sizeof(cli_addr);
         int client_fd = accept(server_fd, (struct sockaddr *)&cli_addr, &cli_len);
         if (client_fd < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR && !stop_requested) continue;
             perror("accept");
             break;
         }
