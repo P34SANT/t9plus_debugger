@@ -1,5 +1,11 @@
 # Offline validation — 2026-11-18
 
+**Later live validation:** ABI 2 was subsequently deployed, and UART1 was moved
+to an IRQ-backed native driver. See
+[`docs/native-uart-live-20261119.md`](docs/native-uart-live-20261119.md)
+for deployment, startup persistence, traffic results and remaining limits.
+The offline-only statements below describe the earlier hardening pass.
+
 ## Result
 
 The final frozen-source Vivado build completed and packaged a matched ABI 2

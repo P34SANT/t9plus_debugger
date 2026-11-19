@@ -1,0 +1,17 @@
+[Unit]
+Description=Plink verified native UARTLite driver
+Requires=t9-fpga.service
+After=t9-fpga.service
+Before=t9-uart-bridge.service
+PartOf=t9-fpga.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/plink/uartlite-current/activate.py start
+ExecStop=/usr/bin/python3 /opt/plink/uartlite-current/activate.py stop
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

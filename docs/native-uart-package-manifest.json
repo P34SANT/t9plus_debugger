@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "kernel_commit": "e475cc1c9432587298212570c2af2be66b820c41",
+  "kernel_release": "6.6.0-xilinx-ge475cc1c9432",
+  "files": {
+    "activate.py": "903277f4988df63e89248969939a9ff93993b07c41214c446f8a0da288b740e8",
+    "build.config": "f99c42ee3ce61bece7f04557f56bb02d00d61d037f1ff5eef9b4ba55e5e1223b",
+    "install.sh": "a93f27091a22dc30dd2575ad19f447cd6bfffb2dcc1ea53b34335491dd0ef6a6",
+    "Module.symvers": "016eea710844ea673cc27304268ecf6776ea09b3ebc5a3adad111c26fa2a53d0",
+    "native-bridge.conf": "eb1780572eaea1f8c278cbebdbe8d127c1b960458c5f08f346624a1d3d571978",
+    "native_bridge.py": "672b19e51e7bc8672fb30bb1c4f5d9ee02c71e6857b1a80fe3f0447b73aa176a",
+    "plink-uartlite.service": "78b8ae533a2afa79701f4a2792cc8b7cd94e3bbed96b590c7cc43d76e1e57706",
+    "running.config": "192ed5e7e45f719d8cf76bd59ad8f0eff4af1fdcc8880a0902bc6a9682cf2909",
+    "uartlite.ko": "f860dcb3377a76e324eee1540d0e5cf85591816665f22da4e8850e9466c0ec85"
+  }
+}
