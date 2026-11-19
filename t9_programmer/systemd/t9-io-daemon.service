@@ -1,5 +1,5 @@
 [Unit]
-Description=Antminer T9+ Target I/O Controller & AI Automation REST API
+Description=Plink web interface and target controls
 After=t9-fpga.service network.target
 Requires=t9-fpga.service
 PartOf=t9-fpga.service
@@ -10,7 +10,6 @@ User=root
 WorkingDirectory=/opt/plink/current/t9_programmer/io_daemon
 ExecStart=/usr/bin/python3 /opt/plink/current/t9_programmer/io_daemon/io_daemon.py
 Environment=PLINK_BIND_ADDRESS=0.0.0.0
-Environment=PLINK_API_TOKEN_FILE=/etc/plink/api.token
 Restart=always
 RestartSec=2
 StandardOutput=journal

@@ -1,16 +1,9 @@
 """Pure request validation; importing this module never accesses hardware."""
 from email import policy
 from email.parser import BytesParser
-import hmac
 from pathlib import Path
 
 MAX_UPLOAD_BYTES = 16 * 1024 * 1024
-
-
-def authorized(header, token):
-    return bool(token and len(token) >= 32 and
-                hmac.compare_digest((header or "").encode("utf-8"),
-                                    ("Bearer " + token).encode("utf-8")))
 
 
 def upload_bytes(content_type, body):

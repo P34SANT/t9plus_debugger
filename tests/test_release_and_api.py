@@ -1,4 +1,4 @@
-"""Offline artifact/auth/upload validation; never imports the live daemon."""
+"""Offline artifact/upload validation; never imports the live daemon."""
 import hashlib
 import json
 from pathlib import Path
@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "t9_programmer" / "io_daemon"))
 from bit_to_pcap import bit_to_pcap
 from release_manifest import package, verify, source_hashes
-from safety import authorized, upload_bytes
+from safety import upload_bytes
 
 
 def test_bit(payload=b"\xaa\x99\x55\x66"):
@@ -47,14 +47,6 @@ class ReleaseAndApiTests(unittest.TestCase):
         self.assertEqual(upload_bytes("application/octet-stream", data)[1], data)
         with self.assertRaises(ValueError):
             upload_bytes("multipart/form-data; boundary=x", b"not multipart")
-
-    def test_auth_fails_closed(self):
-        token = "a" * 64
-        self.assertTrue(authorized("Bearer " + token, token))
-        self.assertFalse(authorized("Bearer \N{LATIN SMALL LETTER E WITH ACUTE}", token))
-        for header, configured in (("", ""), ("Bearer a", "a"),
-                                   ("Bearer " + "b" * 64, token), (None, token)):
-            self.assertFalse(authorized(header, configured))
 
     def test_release_rejects_stale_artifacts_and_sources(self):
         base = Path(tempfile.gettempdir()) / "opencode"

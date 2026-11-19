@@ -3,64 +3,103 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Plink · Probe workspace</title>
+  <meta name="color-scheme" content="light">
+  <title>Plink</title>
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="#overview"><span class="brand-mark">P</span>plink<span class="brand-dot">●</span></a>
-    <div class="workspace-label">PROBE WORKSPACE</div>
-    <nav aria-label="Workspace">
-      <a href="#overview" class="nav-item selected" data-view="overview"><span aria-hidden="true">◈</span> Overview</a>
-      <a href="#connectors" class="nav-item" data-view="connectors"><span aria-hidden="true">▦</span> Connectors</a>
-      <a href="#serial" class="nav-item" data-view="serial"><span aria-hidden="true">›_</span> Serial console</a>
-      <a href="#programming" class="nav-item" data-view="programming"><span aria-hidden="true">⇧</span> Programming</a>
-      <a href="#diagnostics" class="nav-item" data-view="diagnostics"><span aria-hidden="true">≋</span> Diagnostics</a>
-    </nav>
-    <div class="sidebar-bottom"><span class="tag">ZYNQ-7000</span><p>Two debug pods.<br>One measured workspace.</p><button id="access-button" class="button subtle">Unlock controls</button></div>
-  </aside>
-  <main>
-    <header class="topbar"><span>Hardware / <strong id="breadcrumb">Overview</strong></span><div class="topbar-right"><span id="connection" class="status">Connecting</span><span id="access-state" class="tag">READ ONLY</span></div></header>
-    <div class="content">
-      <section class="page-heading"><div><p class="eyebrow">PLINK CONTROL PLANE</p><h1 id="page-title">Your bench, at a glance.</h1><p id="page-description" class="muted">Physical connections and measured probe health. No assumed states.</p></div><button id="refresh" class="button">↻ Refresh</button></section>
-      <div id="notice" class="notice" role="status" hidden></div>
-      <section id="overview" class="view">
-        <div class="metrics">
-          <article class="metric"><span>FPGA fabric</span><strong id="fabric-value">Unknown</strong><small>Linux FPGA manager</small></article>
-          <article class="metric"><span>SWD clock · pod 1</span><strong id="clock-value">—</strong><small id="clock-note">Waiting for telemetry</small></article>
-          <article class="metric"><span>SWO buffered</span><strong id="buffer-value">—</strong><small id="buffer-note">1 MiB software capacity</small></article>
-          <article class="metric"><span>Trace loss</span><strong id="loss-value">—</strong><small id="loss-note">Hardware + software drops</small></article>
-        </div>
-        <div class="section-heading"><h2>Physical interfaces</h2><a href="#connectors">Inspect all pins ↗</a></div>
-        <div id="overview-connectors" class="connector-grid"></div>
-        <div class="bottom-grid">
-          <article class="panel"><div class="panel-heading"><h2>Transport activity</h2><span class="tag">CUMULATIVE</span></div><div id="uart-summary" class="activity-list"></div></article>
-          <article class="panel"><div class="panel-heading"><h2>Before you connect</h2><span class="small-label">WIRING NOTES</span></div><p class="muted">3.3 V signals only. Share a ground reference with your target.</p><div class="wiring-note"><span class="signal trace">SWO</span><span>STM32 PB3 → J3.6 / T10<br><small>Dedicated trace input. Do not drive as BOOT0.</small></span></div><p class="footnote">New ABI 2 behavior requires a verified matched release. This dashboard does not reload the FPGA or attach Windows devices.</p></article>
-        </div>
-      </section>
-      <section id="connectors" class="view" hidden>
-        <div class="notice neutral">Connector view: odd pins on the left, even pins on the right. Confirm pin 1 on the physical board; this is not a cable-side mirror.</div>
-        <div class="connector-grid" id="full-connectors"></div>
-        <article class="panel inspector" id="pin-inspector"><p class="eyebrow">PIN INSPECTOR</p><h2>Select a connector pin</h2><p class="muted">View its package pad, direction, ownership and available controls.</p></article>
-      </section>
-      <section id="serial" class="view" hidden>
-        <article class="panel"><div class="panel-heading"><div><h2>Serial console</h2><p class="muted">115200 baud · 8 data bits · no parity · 1 stop bit</p></div><div class="toolbar"><label class="sr-only" for="serial-channel">UART channel</label><select id="serial-channel"><option value="0">UART0 · J3.7 / J3.8</option><option value="1">UART1 · J3.11 / J3.12</option></select><button id="serial-connect" class="button">Connect</button><button id="serial-clear" class="button subtle">Clear</button></div></div><pre id="terminal" class="terminal" aria-label="Serial output" tabindex="0">Console disconnected. Connecting opens a read stream; it does not reset the target.
-</pre><form id="serial-form" class="send-bar"><label class="sr-only" for="serial-input">Serial text</label><input id="serial-input" placeholder="Send UTF-8 text…" maxlength="4096" autocomplete="off"><label class="checkbox"><input type="checkbox" id="serial-newline" checked> Append LF</label><button class="button primary" type="submit">Send</button></form><p id="serial-state" class="footnote">Disconnected · output is bounded to 200,000 characters.</p></article>
-      </section>
-      <section id="programming" class="view" hidden>
-        <div class="bottom-grid"><article class="panel"><div class="panel-heading"><h2>Program target</h2><span class="tag">AUTHENTICATED</span></div><p class="muted">Upload first, then explicitly confirm a target write. Debug and UART ownership must be free.</p><form id="flash-form" class="form-stack"><label>Engine<select id="flash-engine"><option value="stm32_uart">STM32 · UART bootloader</option><option value="esp32_uart">ESP32 · UART bootloader</option></select></label><label class="file-drop">Firmware binary<input type="file" id="firmware" accept=".bin" required><small id="file-info">Choose a .bin file · maximum 16 MiB</small></label><label>Start address<input id="flash-address" value="0x08000000" pattern="0x[0-9a-fA-F]{1,8}"></label><label class="checkbox"><input id="flash-verify" type="checkbox" checked> Verify after writing</label><label class="checkbox"><input id="flash-reset" type="checkbox" checked> Reset after completion</label><button class="button primary" type="submit">Upload & review</button></form><p class="footnote">STM32 BOOT0 control is disabled while T10 is reserved for SWO. Rewiring and explicit board configuration are required; the UI cannot override this protection.</p></article>
-        <article class="panel"><div class="panel-heading"><h2>Operation log</h2><button id="logs-connect" class="button subtle">Follow logs</button></div><pre id="operation-log" class="terminal log-terminal" tabindex="0">No log stream connected.
-</pre></article></div>
-      </section>
-      <section id="diagnostics" class="view" hidden>
-        <article class="panel"><div class="panel-heading"><div><h2>Probe telemetry</h2><p class="muted">Snapshots older than five seconds are stale, not live.</p></div><button id="download-metrics" class="button">Export JSON</button></div><pre id="diagnostic-json" class="terminal" tabindex="0">Waiting for telemetry…</pre></article><div class="notice neutral">Offline tests do not establish sustained throughput or Windows driver stability. The earlier Windows crash remains unresolved.</div>
-      </section>
-      <footer><span>Plink / Hardware workspace</span><span id="updated">Not yet synchronized</span></footer>
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand" href="#pinout" aria-label="Plink home">
+        <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/><path d="M11 24V8h7a5 5 0 0 1 0 10h-3" fill="none" stroke="#fff" stroke-width="3"/><circle cx="11" cy="24" r="2" fill="#fff"/></svg>
+        <span>Plink</span>
+      </a>
+      <span class="device-label">T9+ <span class="divider">/</span> <span id="device-address">—</span></span>
+      <span id="connection" class="connection" role="status">Connecting</span>
     </div>
+    <nav class="tabs" aria-label="Main navigation">
+      <a href="#pinout" data-view="pinout" class="selected">Pinout</a>
+      <a href="#serial" data-view="serial">Serial</a>
+      <a href="#firmware" data-view="firmware">Firmware</a>
+      <a href="#status" data-view="status">Status</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="page-heading">
+      <div><h1 id="page-title">Pinout</h1><p id="page-description">J3 and J4 connectors</p></div>
+      <button id="refresh" class="button" type="button"><span aria-hidden="true">↻</span> Refresh</button>
+    </div>
+    <div id="notice" class="notice" role="status" hidden><span id="notice-text"></span><button id="notice-close" type="button" aria-label="Dismiss">×</button></div>
+
+    <section id="pinout" class="view" aria-label="Pinout">
+      <div class="summary-bar">
+        <span><span class="summary-label">FPGA</span><strong id="fabric-value">—</strong></span>
+        <span><span class="summary-label">SWD</span><strong id="clock-value">—</strong></span>
+        <span><span class="summary-label">SWO buffer</span><strong id="buffer-value">—</strong></span>
+        <span><span class="summary-label">Dropped</span><strong id="loss-value">—</strong></span>
+        <a href="#status">Details <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="pinout-heading"><p>Board-side view · odd pins on top</p><span>3.3 V logic</span></div>
+      <div id="connectors"></div>
+      <div class="pinout-key" aria-label="Signal colors"><span class="debug">SWD</span><span class="trace">SWO</span><span class="uart">UART</span><span class="gpio">GPIO</span><span class="power">Power</span><span class="ground">Ground</span></div>
+      <article id="pin-inspector" class="panel inspector" aria-live="polite"><div><h2>Pin details</h2><p class="muted">Select a pin above.</p></div></article>
+    </section>
+
+    <section id="serial" class="view" hidden aria-label="Serial">
+      <article class="panel console-panel">
+        <div class="panel-heading">
+          <div class="toolbar"><label for="serial-channel" class="sr-only">Serial port</label><select id="serial-channel"><option value="0">UART0 · J3 pins 7 / 8</option><option value="1">UART1 · J3 pins 11 / 12</option></select><span class="muted serial-format">115200 · 8N1</span></div>
+          <div class="toolbar"><button id="serial-clear" class="button" type="button">Clear</button><button id="serial-save" class="button" type="button">Save</button><button id="serial-connect" class="button primary" type="button">Connect</button></div>
+        </div>
+        <pre id="terminal" class="terminal" aria-label="Serial output" tabindex="0"></pre>
+        <form id="serial-form" class="send-bar"><label for="serial-input" class="sr-only">Serial message</label><input id="serial-input" placeholder="Send a message" maxlength="4096" autocomplete="off"><label for="serial-ending" class="sr-only">Line ending</label><select id="serial-ending"><option value="lf">LF</option><option value="crlf">CRLF</option><option value="none">No ending</option></select><button class="button primary" type="submit">Send</button></form>
+        <div class="console-footer"><span id="serial-state">Disconnected</span><label class="checkbox"><input id="serial-scroll" type="checkbox" checked> Auto-scroll</label></div>
+      </article>
+      <p class="help-text">TX and RX are labeled from the probe. Connect TX to the target’s RX, and RX to TX.</p>
+    </section>
+
+    <section id="firmware" class="view" hidden aria-label="Firmware">
+      <div class="firmware-grid">
+        <article class="panel">
+          <div class="panel-heading"><h2>Flash firmware</h2></div>
+          <form id="flash-form" class="form-stack">
+            <label for="flash-engine">Target</label><select id="flash-engine"><option value="stm32_uart">STM32 · UART bootloader</option><option value="esp32_uart">ESP32 · UART bootloader</option></select>
+            <label for="firmware-file">Firmware file</label><div id="file-drop" class="file-drop"><input type="file" id="firmware-file" accept=".bin" required><p id="file-info">Choose a .bin file or drop it here</p><small>Up to 16 MiB</small></div>
+            <div class="form-columns"><div><label for="flash-address">Start address</label><input id="flash-address" value="0x08000000" pattern="0x[0-9a-fA-F]{1,8}" required></div><div><label for="flash-baud">Baud rate</label><select id="flash-baud"><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option selected>115200</option></select></div></div>
+            <label class="checkbox"><input id="flash-verify" type="checkbox" checked> Verify after writing</label>
+            <label class="checkbox"><input id="flash-reset" type="checkbox" checked> Reset when finished</label>
+            <button class="button primary" type="submit">Flash firmware</button>
+          </form>
+          <p class="help-text">STM32 UART flashing requires BOOT0 wiring. J3 pin 6 is currently assigned to SWO.</p>
+        </article>
+        <article class="panel console-panel">
+          <div class="panel-heading"><h2>Log</h2><div class="toolbar"><button id="logs-clear" class="button" type="button">Clear</button><button id="logs-connect" class="button" type="button">Connect</button></div></div>
+          <pre id="operation-log" class="terminal log-terminal" aria-label="Programming log" tabindex="0"></pre>
+          <div class="console-footer"><span id="log-state">Disconnected</span></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="status" class="view" hidden aria-label="Status">
+      <article class="panel">
+        <div class="panel-heading"><h2>Device</h2><span id="telemetry-state" class="muted">Waiting for data</span></div>
+        <dl id="device-details" class="device-details"></dl>
+      </article>
+      <article class="panel">
+        <div class="panel-heading"><h2>Serial ports</h2><span class="muted">Bytes since service start</span></div>
+        <div class="table-scroll"><table><thead><tr><th>Port</th><th>Backend</th><th>Received</th><th>Sent</th><th>Errors</th></tr></thead><tbody id="uart-summary"></tbody></table></div>
+      </article>
+      <article class="panel">
+        <div class="panel-heading"><h2>SWO</h2><span class="muted">Current capture</span></div>
+        <dl id="swo-details" class="device-details"></dl>
+      </article>
+      <details class="panel raw-data"><summary>Raw data</summary><div class="raw-toolbar"><button id="download-metrics" class="button" type="button">Download JSON</button></div><pre id="diagnostic-json" tabindex="0"></pre></details>
+    </section>
+    <footer><span>Plink</span><span id="updated">Connecting…</span></footer>
   </main>
-  <dialog id="access-dialog"><form id="access-form"><div class="panel-heading"><h2>Unlock controls</h2><button type="button" id="access-close" class="button subtle" aria-label="Close">×</button></div><p class="muted">Enter the board API token. It stays in this page’s memory and is cleared on reload.</p><label>API token<input id="api-token" type="password" autocomplete="off" minlength="32" required></label><p class="footnote">Use a trusted network or an HTTPS reverse proxy. A token does not encrypt plain HTTP.</p><div class="dialog-actions"><button type="button" id="access-lock" class="button">Lock controls</button><button type="submit" class="button primary">Unlock</button></div></form></dialog>
-  <dialog id="confirm-dialog"><h2 id="confirm-title">Confirm action</h2><p id="confirm-detail" class="muted"></p><div class="dialog-actions"><button id="confirm-cancel" class="button">Cancel</button><button id="confirm-accept" class="button primary">Confirm</button></div></dialog>
+
+  <dialog id="confirm-dialog"><h2 id="confirm-title">Flash firmware?</h2><p id="confirm-detail"></p><div class="dialog-actions"><button id="confirm-cancel" class="button" type="button">Cancel</button><button id="confirm-accept" class="button primary" type="button">Flash firmware</button></div></dialog>
 </body>
 </html>

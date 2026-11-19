@@ -29,7 +29,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from safety import authorized, upload_bytes, MAX_UPLOAD_BYTES
+from safety import upload_bytes, MAX_UPLOAD_BYTES
 from ownership import ResourceLease, ResourceBusy
 
 logging.basicConfig(
@@ -41,7 +41,6 @@ logger = logging.getLogger("plink_io_daemon")
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json")
 UPLOAD_DIR = "/var/lib/plink/uploads"
 PORT = 8080
-API_TOKEN = ""
 BIND_ADDRESS = os.environ.get("PLINK_BIND_ADDRESS", "127.0.0.1")
 
 GPIO_D3_RED = 549   # MIO 37
@@ -792,19 +791,6 @@ function escapeHtml(value) {
   element.textContent = String(value);
   return element.innerHTML;
 }
-// Token remains in this page's memory, never in a URL or browser storage.
-const originalFetch = window.fetch.bind(window);
-let controlToken = '';
-window.fetch = async (url, options = {}) => {
-  if ((options.method || 'GET').toUpperCase() === 'POST') {
-    if (!controlToken) controlToken = window.prompt('Plink API token:') || '';
-    options.headers = new Headers(options.headers || {});
-    options.headers.set('Authorization', 'Bearer ' + controlToken);
-  }
-  const response = await originalFetch(url, options);
-  if (response.status === 401) controlToken = '';
-  return response;
-};
 let currentFile = null;
 
 function switchNav(tabId) {
@@ -1185,10 +1171,15 @@ class RestApiHandler(BaseHTTPRequestHandler):
         self.send_json({"error": f"Endpoint not found: {self.path}"}, 404)
 
     def do_POST(self):
-        if (authorized(self.headers.get("Authorization"), API_TOKEN) and
-                urlparse(self.path).path.rstrip("/") in (
-                    "/api/programmer/reset", "/api/programmer/bootloader",
-                    "/api/esp32/reset", "/api/serial/send")):
+        # Local controls need no token. Still reject requests from other sites.
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+            self.send_json({"error": "Cross-origin control is disabled"}, 403)
+            self.close_connection = True
+            return
+        if urlparse(self.path).path.rstrip("/") in (
+                "/api/programmer/reset", "/api/programmer/bootloader",
+                "/api/esp32/reset", "/api/serial/send"):
             try:
                 with ResourceLease("pod1"):
                     return self._do_POST()
@@ -1198,15 +1189,6 @@ class RestApiHandler(BaseHTTPRequestHandler):
         return self._do_POST()
 
     def _do_POST(self):
-        if not authorized(self.headers.get("Authorization"), API_TOKEN):
-            self.send_json({"error": "Bearer authentication required"}, 401)
-            self.close_connection = True
-            return
-        origin = self.headers.get("Origin")
-        if origin and urlparse(origin).netloc != self.headers.get("Host"):
-            self.send_json({"error": "Cross-origin control is disabled"}, 403)
-            self.close_connection = True
-            return
         try:
             content_len = int(self.headers.get("Content-Length", "0"))
             if not 0 <= content_len <= MAX_UPLOAD_BYTES:
@@ -1420,13 +1402,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 def run_server():
-    global d3_manager, pin_manager, API_TOKEN
-    token_path = os.environ.get("PLINK_API_TOKEN_FILE", "/etc/plink/api.token")
-    try:
-        with open(token_path, encoding="ascii") as token_file:
-            API_TOKEN = token_file.read().strip()
-    except OSError:
-        logger.warning("No API token: control endpoints will reject requests")
+    global d3_manager, pin_manager
     os.makedirs(UPLOAD_DIR, mode=0o700, exist_ok=True)
     d3_manager = D3LedManager()
     pin_manager = PinManager(CONFIG_PATH)

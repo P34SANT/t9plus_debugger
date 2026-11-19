@@ -15,13 +15,12 @@ sys.path.insert(0, str(ROOT / "t9_programmer" / "io_daemon"))
 import io_daemon as daemon
 
 
-def mock_server():
-    daemon.API_TOKEN = "t" * 64
+def mock_server(handler=daemon.RestApiHandler):
     daemon.d3_manager = SimpleNamespace(mode="idle")
     pins = json.loads((ROOT / "t9_programmer/io_daemon/pins.json").read_text())
     daemon.pin_manager = SimpleNamespace(
         pins=pins, resolve_pin=lambda query: (query, pins.get(query)))
-    return daemon.ThreadedHTTPServer(("127.0.0.1", 0), daemon.RestApiHandler)
+    return daemon.ThreadedHTTPServer(("127.0.0.1", 0), handler)
 
 
 class WebApiTests(unittest.TestCase):
@@ -64,9 +63,9 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(next(p["fpga"] for p in mapping["pins"]
                               if p["header"] == "J3" and p["pin"] == 6), "T10")
 
-    def test_auth_and_json_validation(self):
-        self.assertEqual(self.request("/api/unknown", "{}", method="POST")[0], 401)
-        headers = {"Authorization": "Bearer " + daemon.API_TOKEN}
+    def test_controls_need_no_token_and_validate_json(self):
+        self.assertEqual(self.request("/api/unknown", "{}", method="POST")[0], 404)
+        headers = {}
         self.assertEqual(self.request("/api/unknown", "{broken", headers, "POST")[0], 400)
         self.assertEqual(self.request("/api/unknown", "[]", headers, "POST")[0], 400)
         self.assertEqual(self.request("/api/unknown", b"\xff", headers, "POST")[0], 400)
@@ -75,6 +74,22 @@ class WebApiTests(unittest.TestCase):
         with patch.object(daemon, "ResourceLease", return_value=nullcontext()):
             self.assertEqual(self.request("/api/serial/send",
                 '{"channel":2,"text":"x"}', headers, "POST")[0], 400)
+
+    def test_serial_send_without_authorization(self):
+        from unittest.mock import MagicMock
+        connection = MagicMock()
+        create_connection = daemon.socket.create_connection
+        def connect(address, *args, **kwargs):
+            if address == ("127.0.0.1", 2001):
+                return connection
+            return create_connection(address, *args, **kwargs)
+        with patch.object(daemon, "ResourceLease", return_value=nullcontext()), \
+                patch.object(daemon.socket, "create_connection", side_effect=connect):
+            status, _, body = self.request("/api/serial/send",
+                '{"channel":1,"text":"hello\\n"}', method="POST")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["status"], "ok")
+        connection.__enter__.return_value.sendall.assert_called_once_with(b"hello\n")
 
     def test_unknown_gpio_is_not_low(self):
         with patch.object(daemon.os.path, "exists", return_value=False), \

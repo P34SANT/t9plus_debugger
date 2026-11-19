@@ -1,5 +1,10 @@
 # Offline validation — 2026-11-18
 
+**Web update — 2026-11-19:** the interface now uses standard Pinout, Serial,
+Firmware and Status tabs, restores horizontal 2×12 connector diagrams and
+requires no API token. Desktop/mobile browser tests and token-free API tests
+passed. See [`docs/web-ui-20261119.md`](docs/web-ui-20261119.md).
+
 **Later live validation:** ABI 2 was subsequently deployed, and UART1 was moved
 to an IRQ-backed native driver. See
 [`docs/native-uart-live-20261119.md`](docs/native-uart-live-20261119.md)
@@ -54,5 +59,6 @@ reset was performed during this hardening pass. Sustained traffic, IRQ/device
 tree behavior, full target compatibility and Windows driver stability remain
 unqualified. The earlier Windows crash has no established driver attribution.
 
-The UI screenshot in `docs/plink-overview.png` is from the read-only localhost
-mock preview, not a live board measurement.
+The screenshot originally recorded here was a localhost mock preview.
+`docs/plink-overview.png` has since been replaced with the redesigned live
+interface captured on 2026-11-19; it is not the earlier offline-build evidence.

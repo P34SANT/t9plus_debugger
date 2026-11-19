@@ -38,30 +38,31 @@ See [HARDENING.md](HARDENING.md), [BUGS.md](BUGS.md) and
 | SWD | Two FPGA engines; bounded completion waits; configurable turnaround/data phase; real pin release |
 | SWO | 32 KiB synchronous banked BRAM FIFO, atomic four-byte pop, loss/framing counters, independent 1 MiB software ring |
 | AXI-Lite | Independent AW/W acceptance and stable responses under backpressure |
-| Web | Overview, physical 2×12 connectors, pin inspector, dual serial console, programming confirmation, diagnostics |
+| Web | Horizontal 2×12 pinouts, pin controls, dual serial console, firmware flashing and device status |
 | Deployment | Verified matched releases, source/artifact hashes, maintenance locks and fail-closed rollback |
 
 The fabric remains at **100 MHz**. Divider configuration is not a measurement
 of external signal integrity or a guarantee of a particular cable/target speed.
 
-## Web workspace
+## Web interface
 
-![Plink workspace, offline mock preview](docs/plink-overview.png)
+![Plink web interface](docs/plink-overview.png)
 
 After an approved deployment, open `http://192.168.2.99:8080`.
 
-- Read-only views distinguish unknown, backend-owned and stale measurements.
-- Select a pin in either connector to inspect its package pad and controls.
-- Serial console supports UART0 and UART1. Stream connection is explicit.
-- Target-changing POST requests require a bearer token. Use **Unlock controls**
-  and the token from `/etc/plink/api.token`; it stays only in page memory.
+- J3/J4 match the board connector layout: two horizontal rows of 12,
+  odd pins above even pins. Select a contact for its pad and controls.
+- Serial supports UART0 and UART1, with selectable line endings and text export.
+- Controls are always available; there is no API token or unlock step.
+- Missing or stale measurements display as a dash, not a fabricated value.
 - Programming uploads are binary-safe, limited to 16 MiB and uniquely named.
   The UI asks for confirmation before starting a target write.
 
 The API itself binds to loopback by default; the installed systemd unit enables
 LAN access. Use a trusted isolated LAN, firewall, or HTTPS reverse proxy.
-Bearer authentication does **not** encrypt HTTP. USB/IP is also an unauthenticated
-trusted-network transport. Raw UART bridge ports now bind to loopback.
+Web controls and USB/IP are unauthenticated trusted-network services.
+Foreign browser origins are rejected, and hardware ownership checks remain.
+Raw UART bridge ports bind to loopback.
 
 For a safe local mock preview, with **no board access**:
 
@@ -70,6 +71,10 @@ python tests/preview_ui.py
 ```
 
 Open the localhost URL it prints. All writes are rejected in this preview.
+
+The current web-only deployment and rollback are recorded in
+[`docs/web-ui-20261119.md`](docs/web-ui-20261119.md). It does not replace or
+reload the matched FPGA/probe release.
 
 ## Wiring
 

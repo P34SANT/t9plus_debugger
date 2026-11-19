@@ -43,7 +43,7 @@ skip on Windows and can run separately in WSL:
 python3 -m unittest discover -s tests -p "test_uart_and_ownership.py" -v
 ```
 
-Coverage includes upload binary integrity, auth, artifact/source tampering,
+Coverage includes upload binary integrity, token-free controls, artifact/source tampering,
 HTTP asset allowlisting/security headers, canonical pin map, malformed JSON,
 unknown states, reset cleanup, SSE framing, partial TTY writes, coalesced
 bounded delivery and exclusive leases. Importing the daemon does not initialize
@@ -78,7 +78,7 @@ USB/IP.
 `tests/ui_smoke.cjs` uses Playwright from an external install (`NODE_PATH`) and
 an installed Edge browser (`PLINK_BROWSER` overrides its path). It starts a
 local read-only mock preview and checks desktop/mobile layout, connector
-mapping, unknown metrics, navigation and authentication gating. Set
+mapping, unknown metrics, navigation and token-free requests. Set
 `PLINK_UI_OUTPUT` to an existing directory for screenshots.
 
 ### RTL
@@ -102,10 +102,10 @@ external timing must be reviewed separately.
 
 ## Web and operations
 
-Mutations require `Authorization: Bearer <token>`. The UI stores no token in
-URLs, localStorage or sessionStorage. It sets the token only in page memory.
-Control requests with a foreign Origin are rejected. Use HTTPS or an isolated
-trusted LAN; there is no built-in TLS.
+Web controls require no token or unlock step. Control requests with a foreign
+Origin are still rejected, and hardware ownership/validation checks remain.
+Use an isolated trusted LAN or a firewall; there is no built-in TLS or user
+authentication.
 
 `/api/status` reports Linux fabric state; `/api/metrics` returns snapshot ages;
 `/api/pinmap` serves the canonical signal map. The UI treats snapshots older

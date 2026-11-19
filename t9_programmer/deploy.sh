@@ -29,9 +29,6 @@ else
 fi
 # Verify before touching any running service.
 python3 "$DEST/scripts/release_manifest.py" verify --root "$DEST" --output "$DEST/release"
-if [[ ! -f /etc/plink/api.token ]]; then
-    (umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > /etc/plink/api.token)
-fi
 PREVIOUS=$(readlink -f /opt/plink/current || true)
 SERVICES=(t9-cmsis-dap t9-uart-bridge t9-io-daemon t9-openocd plink-stlink t9-programmer)
 for service in "${SERVICES[@]}"; do
